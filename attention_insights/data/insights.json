@@ -1,0 +1,82 @@
+{
+ "insights": [
+  "High attention episodes contain surprising facts, while low attention episodes are technical and less engaging.",
+  "Speakers should consider incorporating more surprising elements to maintain audience interest.",
+  "Technical details should be simplified or connected to real-world applications to maintain audience engagement."
+ ],
+ "episodes": [
+  {
+   "kind": "low",
+   "start": 12.26,
+   "end": 17.72,
+   "att": 0.2246474180832718,
+   "z": -1.7391029465455663,
+   "text": "Stage 2 makes up about 50 % of the night and a full cycle has roughly 90 minutes.",
+   "label": "Sleep Stages",
+   "why": "The explanation for the low attention is the technical and less engaging nature of the content about sleep stages.",
+   "keywords": [
+    "stage",
+    "makes",
+    "full",
+    "cycle",
+    "roughly",
+    "minutes"
+   ]
+  },
+  {
+   "kind": "high",
+   "start": 18.4,
+   "end": 25.0,
+   "att": 0.7257925033006744,
+   "z": 1.3433458346468232,
+   "text": "But here's the surprise. People who sleep after practicing piano wake up playing better without any extra practice.",
+   "label": "Surprise Fact",
+   "why": "The high attention is due to the unexpected and surprising nature of the fact about playing better without extra practice after sleep.",
+   "keywords": [
+    "surprise",
+    "people",
+    "practicing",
+    "piano",
+    "wake",
+    "playing"
+   ]
+  }
+ ],
+ "chunks": [
+  {
+   "start": 2.66,
+   "end": 6.22,
+   "text": "The night before my biggest exam I skipped sleep.",
+   "att": 0.5543798315911731,
+   "z": 0.289018861126431
+  },
+  {
+   "start": 6.74,
+   "end": 11.24,
+   "text": "The next morning my mind was completely blank. Sleep has four stages.",
+   "att": 0.5489304697380306,
+   "z": 0.25550086544418565
+  },
+  {
+   "start": 12.26,
+   "end": 17.72,
+   "text": "Stage 2 makes up about 50 % of the night and a full cycle has roughly 90 minutes.",
+   "att": 0.2246474180832718,
+   "z": -1.7391029465455663
+  },
+  {
+   "start": 18.4,
+   "end": 25.0,
+   "text": "But here's the surprise. People who sleep after practicing piano wake up playing better without any extra practice.",
+   "att": 0.7257925033006742,
+   "z": 1.3433458346468232
+  },
+  {
+   "start": 25.94,
+   "end": 30.3,
+   "text": "The slides will be uploaded by Friday and next week's room is building C.",
+   "att": 0.48320523938572724,
+   "z": -0.1487626146718744
+  }
+ ]
+}
