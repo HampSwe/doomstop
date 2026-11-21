@@ -157,11 +157,40 @@ class ColourUSB:
         self.cap.close()
 
 
+def cpd_listed():
+    """True if macOS currently lists the LogiInsight infrared camera ("LVNext CPD Camera")."""
+    import subprocess
+
+    try:
+        out = subprocess.run(["system_profiler", "SPCameraDataType"], capture_output=True,
+                             text=True, timeout=15).stdout
+    except Exception:
+        return False
+    return "CPD Camera" in out
+
+
+def looks_like_ir(frame):
+    """The LogiInsight infrared picture is portrait AND grey. An iPhone (Continuity Camera)
+    can be portrait too, but it is in colour, so both are required."""
+    if frame is None or frame.ndim != 3 or frame.shape[0] <= frame.shape[1]:
+        return False
+    small = frame[::8, ::8].astype(np.int16)
+    spread = np.abs(small[..., 0] - small[..., 1]).mean() + np.abs(small[..., 1] - small[..., 2]).mean()
+    return spread < 4.0
+
+
 def open_infrared(ir_device=None):
-    """The infrared stream through macOS, if it is still offered while pyuvc holds the camera; else None."""
+    """The LogiInsight infrared stream through macOS, if it is still offered while pyuvc holds
+    the camera; else None. Never falls back to another portrait camera such as an iPhone."""
     from camera_utils import CameraNotFoundError, backend_id, describe, find_camera, open_camera
     from phone_detect import IR_SIZES, IR_WARMUP_FRAMES, Stream
 
+    def off(why):
+        print(f"NOTE: no LogiInsight infrared stream ({why}); the infrared signals are off.")
+        return None
+
+    if not cpd_listed():
+        return off("macOS stopped listing 'LVNext CPD Camera' once the colour stream was opened over USB")
     try:
         if ir_device is None:
             print("Looking for the near-infrared (CPD) camera ...")
@@ -171,9 +200,16 @@ def open_infrared(ir_device=None):
             backend = None
         cap, info = open_camera(ir_device, backend, *IR_SIZES["512x640"], "MJPG", 30)
     except (CameraNotFoundError, Exception) as e:  # noqa: BLE001 - any failure means "no infrared"
-        print(f"NOTE: no infrared stream on this Mac while the colour one is open ({e}); "
-              "the infrared signals are off.")
-        return None
+        return off(str(e))
+    frame = None
+    for _ in range(15):                               # skip warm-up frames, keep the last good one
+        ok, f = cap.read()
+        if ok and f is not None:
+            frame = f
+    if not looks_like_ir(frame):
+        cap.release()
+        return off(f"camera index {ir_device} is not the LogiInsight infrared (a colour picture, "
+                   "e.g. an iPhone's Continuity Camera)")
     ir = Stream("ir", cap, describe(info), IR_WARMUP_FRAMES)
     print(f"Opened infrared: {ir.description}")
     return ir
