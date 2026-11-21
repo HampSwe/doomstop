@@ -176,13 +176,13 @@ def looks_like_ir(frame):
         return False
     small = frame[::8, ::8].astype(np.int16)
     spread = np.abs(small[..., 0] - small[..., 1]).mean() + np.abs(small[..., 1] - small[..., 2]).mean()
-    return spread < 4.0
+    return spread < 6.0
 
 
 def open_infrared(ir_device=None):
     """The LogiInsight infrared stream through macOS, if it is still offered while pyuvc holds
     the camera; else None. Never falls back to another portrait camera such as an iPhone."""
-    from camera_utils import CameraNotFoundError, backend_id, describe, find_camera, open_camera
+    from camera_utils import CameraNotFoundError, backend_id, describe, open_camera
     from phone_detect import IR_SIZES, IR_WARMUP_FRAMES, Stream
 
     def off(why):
@@ -191,13 +191,23 @@ def open_infrared(ir_device=None):
 
     if not cpd_listed():
         return off("macOS stopped listing 'LVNext CPD Camera' once the colour stream was opened over USB")
+    backend = None
     try:
         if ir_device is None:
+            # find_camera("ir") takes the first camera that is portrait OR grey, which on a Mac
+            # is often an iPhone (Continuity Camera). Probe them all and require portrait AND grey.
+            from camera_utils import list_cameras
             print("Looking for the near-infrared (CPD) camera ...")
-            ir_device, backend_name = find_camera("ir")
-            backend = backend_id(backend_name)
-        else:
-            backend = None
+            cams = list_cameras()
+            for c in cams:
+                print(f"  [{c['index']}] {c['width']}x{c['height']}  {'grey' if c['gray'] else 'colour'}")
+            ir_cams = [c for c in cams if c["gray"] and c["height"] > c["width"]]
+            if not ir_cams:
+                return off("no camera gives a grey portrait picture")
+            ir_device = ir_cams[0]["index"]
+            backend = ir_cams[0].get("backend")
+            if isinstance(backend, str):
+                backend = backend_id(backend)
         cap, info = open_camera(ir_device, backend, *IR_SIZES["512x640"], "MJPG", 30)
     except (CameraNotFoundError, Exception) as e:  # noqa: BLE001 - any failure means "no infrared"
         return off(str(e))
