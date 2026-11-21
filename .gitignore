@@ -224,3 +224,6 @@ __marimo__/
 
 # Recorded face landmarks (look_down.py)
 captures/
+
+# MediaPipe hand model (hand_desk.py downloads it on first run)
+models/hand_landmarker.task
