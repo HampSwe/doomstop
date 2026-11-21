@@ -5,10 +5,10 @@
 The simulator knows how engaging each manuscript section is meant to be (stories,
 questions and surprises engage; definitions, methodology and admin don't). It finds
 where each section starts in the transcript, then builds a 2 Hz signal with:
-  - a sluggish response (first-order lag, tau ~6 s) plus a reaction delay of ~3 s,
+  - a sluggish response (first-order lag, tau ~2 s) plus a reaction delay of ~1.5 s,
   - slow decay of attention inside long sections,
   - fatigue drift over the whole talk,
-  - AR(1) noise and one short spurious spike (to test the minimum-duration filter).
+  - AR(1) noise and one 1 s spurious spike (to test the minimum-duration filter).
 
 The insights pipeline never sees these section levels; it only gets the CSV.
 """
@@ -27,17 +27,14 @@ HERE = Path(__file__).parent
 # Target engagement per manuscript section (order matters).
 LEVELS = {
     "Opening story": 0.80,
-    "Definitions and numbers": 0.35,
-    "Audience question": 0.85,
-    "Study methodology": 0.28,
+    "Definitions and numbers": 0.30,
     "Surprising result": 0.88,
-    "Logistics and announcements": 0.30,
-    "Closing": 0.62,
+    "Logistics and announcements": 0.28,
 }
 
 FS = 2.0          # samples per second
-DELAY = 3.0       # audience reaction delay (s)
-TAU = 6.0         # response time constant (s)
+DELAY = 1.5       # audience reaction delay (s)
+TAU = 2.0         # response time constant (s)
 FATIGUE = 0.10    # total drop over the talk
 
 
@@ -88,7 +85,7 @@ def simulate(words_json: Path, manuscript: Path, seed: int = 7) -> tuple[np.ndar
         lvl = LEVELS.get(title, 0.5)
         since = t[m] - (s0 + DELAY)
         # high sections fade slowly, low sections sag faster
-        decay = 0.0015 if lvl > 0.6 else 0.004
+        decay = 0.003 if lvl > 0.6 else 0.01
         target[m] = lvl * np.exp(-decay * since) + (1 - np.exp(-decay * since)) * 0.2
 
     # First-order lag (sluggish group response).
@@ -103,10 +100,10 @@ def simulate(words_json: Path, manuscript: Path, seed: int = 7) -> tuple[np.ndar
     for i in range(1, len(t)):
         noise[i] = 0.85 * noise[i - 1] + rng.normal(0, 0.015)
     score += noise
-    # One spurious 2-second spike (e.g. a door slamming) during the methodology section.
-    meth = dict(starts).get("Study methodology")
-    if meth is not None:
-        k = (t > meth + 12) & (t < meth + 14)
+    # One spurious 1-second spike (e.g. a door slamming) during the dull numbers.
+    dull = dict(starts).get("Definitions and numbers")
+    if dull is not None:
+        k = (t > dull + 3) & (t < dull + 4)
         score[k] += 0.25
     return t, np.clip(score, 0, 1)
 

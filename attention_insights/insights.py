@@ -3,11 +3,13 @@
     python attention_insights/insights.py words.json attention.csv [--out-dir DIR]
 
 Steps
-  1. Group words into ~20-45 s chunks, breaking at sentence ends / pauses.
+  1. Group words into chunks (length scales with the talk: ~1/8 of it, 3-12 s minimum),
+     breaking at sentence ends / pauses.
   2. Smooth + linearly detrend the attention signal, then give each chunk the mean
      attention over [start+lag, end+lag] and a z-score relative to the session.
   3. Pick high / low episodes (|z| above threshold, merged when adjacent, minimum length).
-  4. Summarize with Claude (if credentials are available), else a keyword fallback.
+  4. Label them with a local open-source LLM via Ollama (default qwen2.5:3b),
+     else a keyword fallback.
   5. Write report.md + timeline.png (+ insights.json).
 """
 
@@ -15,13 +17,16 @@ import argparse
 import csv
 import json
 import re
+import urllib.error
+import urllib.request
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 import numpy as np
 
-MODEL = "claude-opus-5-5"
+OLLAMA_URL = "http://localhost:11434/api/chat"
+MODEL = "qwen2.5:3b"
 
 
 @dataclass
@@ -128,11 +133,7 @@ def keywords(text: str, background: Counter, n=6) -> list[str]:
     return [w for w, _ in sorted(score.items(), key=lambda x: -x[1])[:n]]
 
 
-def summarize_with_claude(episodes: list[Episode], full_text: str) -> str | None:
-    try:
-        import anthropic
-    except ImportError:
-        return None
+def summarize_with_llm(episodes: list[Episode], full_text: str, model: str = MODEL) -> str | None:
     blocks = []
     for i, e in enumerate(episodes):
         blocks.append(f'<episode id="{i}" kind="{e.kind}" time="{fmt(e.start)}-{fmt(e.end)}" '
@@ -147,47 +148,44 @@ notably HIGH or LOW relative to the rest of the session.
 
 {chr(10).join(blocks)}
 
-Reply with JSON only, no code fences, in this shape:
+Reply with JSON only, in this shape:
 {{"episodes": [{{"id": 0, "label": "<3-6 word topic label>", "why": "<one sentence: what in the content/delivery plausibly explains the attention level>"}}],
  "insights": ["<3-5 short bullets contrasting what high-attention parts have in common vs. the low ones, with concrete advice for the speaker>"]}}
 
 Describe correlations ("attention was lower during X"), not proven causes."""
+    body = json.dumps({
+        "model": model,
+        "stream": False,
+        "format": "json",
+        "options": {"temperature": 0.2},
+        "messages": [{"role": "user", "content": prompt}],
+    }).encode()
+    req = urllib.request.Request(OLLAMA_URL, data=body, headers={"Content-Type": "application/json"})
     try:
-        client = anthropic.Anthropic()
-        resp = client.beta.messages.create(
-            model=MODEL,
-            max_tokens=16000,
-            betas=["server-side-fallback-2026-07-01"],
-            fallbacks="default",
-            output_config={"effort": "medium"},
-            messages=[{"role": "user", "content": prompt}],
-        )
-    except anthropic.AuthenticationError:
-        print("Claude: no valid credentials (set ANTHROPIC_API_KEY) - using keyword fallback.")
-        return None
-    except anthropic.APIConnectionError:
-        print("Claude: network error - using keyword fallback.")
-        return None
-    except anthropic.APIStatusError as e:
-        print(f"Claude: API error {e.status_code} - using keyword fallback.")
-        return None
-    except TypeError as e:  # e.g. credentials missing entirely
-        print(f"Claude unavailable ({e}) - using keyword fallback.")
-        return None
-    if resp.stop_reason == "refusal":
-        return None
-    return "".join(b.text for b in resp.content if b.type == "text")
+        with urllib.request.urlopen(req, timeout=300) as r:
+            return json.loads(r.read())["message"]["content"]
+    except urllib.error.HTTPError as e:
+        print(f"Ollama error {e.code} ({e.read()[:200]!r}) - try `ollama pull {model}`. Using keyword fallback.")
+    except (urllib.error.URLError, TimeoutError) as e:
+        print(f"Ollama not reachable ({e}) - start it with `ollama serve`. Using keyword fallback.")
+    return None
 
 
-def apply_llm(episodes: list[Episode], raw: str) -> list[str]:
-    m = re.search(r"\{.*\}", raw, re.S)
-    data = json.loads(m.group(0) if m else raw)
-    for item in data.get("episodes", []):
-        i = int(item["id"])
-        if 0 <= i < len(episodes):
-            episodes[i].label = item.get("label", "")
-            episodes[i].why = item.get("why", "")
-    return data.get("insights", [])
+def apply_llm(episodes: list[Episode], raw: str) -> list[str] | None:
+    """Merge the LLM's labels into the episodes; None if the reply is unusable."""
+    try:
+        m = re.search(r"\{.*\}", raw, re.S)
+        data = json.loads(m.group(0) if m else raw)
+        for item in data.get("episodes", []):
+            i = int(item["id"])
+            if 0 <= i < len(episodes):
+                episodes[i].label = item.get("label") or episodes[i].label
+                episodes[i].why = item.get("why", "")
+        ins = data.get("insights", [])
+        return [str(x) for x in ins] if isinstance(ins, list) else [str(ins)]
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        print(f"Could not parse LLM reply ({e}) - using keyword fallback.")
+        return None
 
 
 def fallback_insights(episodes: list[Episode]) -> list[str]:
@@ -197,7 +195,7 @@ def fallback_insights(episodes: list[Episode]) -> list[str]:
         if es:
             labs = "; ".join(f"{e.label} ({fmt(e.start)})" for e in es)
             out.append(f"Attention was {word} during: {labs}.")
-    out.append("Set ANTHROPIC_API_KEY to get LLM-written topic labels and explanations.")
+    out.append("Run `ollama serve` (with the model pulled) to get LLM-written topic labels and explanations.")
     return out
 
 
@@ -224,7 +222,7 @@ def plot(path: Path, t, s_raw, s_detr, chunks, episodes, lag):
                 fontsize=9, color=col, wrap=True, fontweight="bold")
     ax.set_ylim(0, 1)
     ax.set_xlim(t[0], t[-1])
-    ticks = np.arange(0, t[-1] + 1, 30)
+    ticks = np.arange(0, t[-1] + 1, 5 if t[-1] < 90 else 30)
     ax.set_xticks(ticks, [fmt(x) for x in ticks])
     ax.set_xlabel("time (shaded spans shifted by reaction lag)")
     ax.set_ylabel("audience attention")
@@ -240,7 +238,8 @@ def main() -> None:
     ap.add_argument("words_json")
     ap.add_argument("attention_csv")
     ap.add_argument("--out-dir")
-    ap.add_argument("--lag", type=float, default=5.0, help="audience reaction lag in seconds")
+    ap.add_argument("--lag", type=float, default=2.0, help="audience reaction lag in seconds")
+    ap.add_argument("--model", default=MODEL, help="Ollama model name")
     ap.add_argument("--z", type=float, default=0.6, help="z-score threshold for high/low")
     ap.add_argument("--k", type=int, default=3, help="max episodes per kind")
     ap.add_argument("--no-llm", action="store_true")
@@ -255,10 +254,12 @@ def main() -> None:
     t = np.array([float(r["t"]) for r in rows])
     s = np.array([float(r["attention"]) for r in rows])
 
-    chunks = make_chunks(words)
-    s_detr = prepare_signal(t, s)
+    talk = words[-1]["end"] - words[0]["start"]
+    min_dur = float(np.clip(talk / 8, 3.0, 12.0))  # 30 s talk -> ~4 s chunks
+    chunks = make_chunks(words, min_dur=min_dur, max_dur=2.5 * min_dur)
+    s_detr = prepare_signal(t, s, smooth_s=min(4.0, talk / 20))
     score_chunks(chunks, t, s_detr, a.lag)
-    episodes = select_episodes(chunks, a.z, a.k)
+    episodes = select_episodes(chunks, a.z, a.k, min_dur=0.6 * min_dur)
 
     full_text = " ".join(w["word"] for w in words)
     bg = Counter(w for w in re.findall(r"[a-z]+", full_text.lower()) if w not in STOP)
@@ -266,9 +267,11 @@ def main() -> None:
         e.keywords = keywords(e.text, bg)
         e.label = ", ".join(e.keywords[:3])
 
-    raw = None if a.no_llm else summarize_with_claude(episodes, full_text)
-    insights = apply_llm(episodes, raw) if raw else fallback_insights(episodes)
-    source = f"Claude ({MODEL})" if raw else "keyword fallback"
+    raw = None if a.no_llm else summarize_with_llm(episodes, full_text, a.model)
+    insights = apply_llm(episodes, raw) if raw else None
+    source = f"{a.model} via Ollama" if insights is not None else "keyword fallback"
+    if insights is None:
+        insights = fallback_insights(episodes)
 
     plot(out_dir / "timeline.png", t, s, s_detr, chunks, episodes, a.lag)
 

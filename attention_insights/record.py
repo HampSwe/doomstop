@@ -1,6 +1,6 @@
 """Record the manuscript from the default microphone to a WAV file.
 
-    python attention_insights/record.py [out.wav] [--max 420] [--silence 6]
+    python attention_insights/record.py [out.wav] [--max 60] [--silence 4]
 
 Starts after a 3 s countdown. Stops on Ctrl+C, after --max seconds, or after
 --silence seconds of quiet once you've started talking.
@@ -22,8 +22,8 @@ RATE = 16000  # Whisper works at 16 kHz anyway
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("out", nargs="?", default="attention_insights/data/talk.wav")
-    ap.add_argument("--max", type=float, default=420.0)
-    ap.add_argument("--silence", type=float, default=6.0)
+    ap.add_argument("--max", type=float, default=60.0)
+    ap.add_argument("--silence", type=float, default=4.0)
     a = ap.parse_args()
     out = Path(a.out)
     out.parent.mkdir(parents=True, exist_ok=True)
