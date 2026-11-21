@@ -3,18 +3,21 @@
     python dashboard.py               # finds the LogiInsight colour and infrared cameras
     python dashboard.py --device 1    # or name the colour camera index
     python dashboard.py --face        # also show face_down and face_down_score
+    python dashboard.py --binary-gaze # also show gaze_down (0 or 1)
 
 Signals (scores are 0..1; the white tick on a bar is where it counts as "on"):
 
-    gaze_down            0 or 1: looking below the screen           colour stream, camera's face data
-    gaze_down_score      how far the eyelids have dropped           (0.5 = the threshold)
+    gaze_down_score      how far the eyelids have dropped           colour stream, camera's face data
+                         (0.5 = looking below the screen)
     color_phone          phone detector confidence                  colour stream
     phone                phone detector confidence                  infrared stream
     phone_in_hand        how steadily a hand has been at that phone infrared stream
-    gaze_down_x_phone    gaze_down * phone
+    gaze_down_x_phone    gaze_down * phone: the infrared phone confidence while looking down, else 0
 
-face_down and face_down_score (head tilt) are still computed but hidden unless
---face is given.
+Left out of the list for now, but still computed (HIDDEN below): the yes/no
+gaze_down, which --binary-gaze brings back, and face_down / face_down_score
+(head tilt), which --face brings back. gaze_down_x_phone keeps using gaze_down
+either way.
 
 Needs the LogiInsight camera and its login (LOGIWEBCAM_USER / LOGIWEBCAM_PASSWORD),
 like look_down.py, which this builds on. Look at the screen for the first
@@ -48,6 +51,8 @@ WIDTH = PAD + COLOUR_W + GAP + IR_W + PAD
 ROW_H = 38
 BACKGROUND = (30, 30, 30)
 MESSAGE_S = 4.0                    # how long a note such as "screen pose saved" stays in the bottom line
+# Signals that are computed but not in the list, and the option that brings each group back.
+HIDDEN = {"face": ("face_down", "face_down_score"), "binary_gaze": ("gaze_down",)}
 
 
 def colour_view(frame, face, phones, det, mirror):
@@ -119,6 +124,7 @@ def main():
     p.add_argument("--device", type=int, help="colour camera index (default: find the LogiInsight camera)")
     p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--face", action="store_true", help="also show face_down and face_down_score")
+    p.add_argument("--binary-gaze", action="store_true", help="also show the yes/no gaze_down")
     p.add_argument("--phone-score", type=float, default=0.35,
                    help="confidence at which a phone counts as seen (default 0.35)")
     p.add_argument("--no-mirror", action="store_true", help="do not mirror the pictures")
@@ -141,6 +147,7 @@ def main():
     worker = start_phone_worker(args.phone_score, True)
     thresholds = {"face_down_score": 0.5, "gaze_down_score": 0.5, "color_phone": args.phone_score,
                   "phone": args.phone_score, "phone_in_hand": IN_HAND_ON, "gaze_down_x_phone": args.phone_score}
+    hidden = {name for option, names in HIDDEN.items() if not getattr(args, option) for name in names}
     ir_frame, started, n_frames = None, time.time(), 0
     message, message_t = "", 0.0
     try:
@@ -159,9 +166,7 @@ def main():
                 worker.submit(fresh, "ir")            # never drawn on: its view is a copy
             feed.poll(now)
 
-            values = signals(det, worker, now)
-            if not args.face:                         # still computed, just not shown
-                values = {name: v for name, v in values.items() if not name.startswith("face_")}
+            values = {name: v for name, v in signals(det, worker, now).items() if name not in hidden}
             if det.message != message:                # a new note from the detector: show it for a while
                 message, message_t = det.message, now
             if now - started > AI_WARN_S:
