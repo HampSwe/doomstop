@@ -3,10 +3,11 @@
 live_insights.py - presenter feedback: a small attention meter during the talk, the full picture right after.
 
 Joins the live attention stream (attention_profile.py) with attention_insights (transcript + LLM summary):
-  - while attention samples and transcript words come in, only a small meter is shown (presenter_ui.py): a
-    column of blocks going up and down with the audience's attention, so the presenter isn't distracted;
-  - when the stream ends, a feedback card pops up: the attention profile of the whole talk, the most and least
-    engaging subjects (when, what was said, related topics) and tips when a local LLM (Ollama) wrote them.
+  - while attention samples and transcript words come in, only a small meter is shown (presenter_ui.py): an
+    LED eye that lights up and turns from red to green with the audience's attention, so the presenter isn't
+    distracted;
+  - when the stream ends, a feedback card pops up with the attention over the whole talk; hovering over the
+    graph shows the topic at that moment (named by a local LLM via Ollama, else keywords).
     attention_insights also writes report.md, timeline.png and insights.json into --out-dir.
 
     python attention/simulate.py --demo-talk | python attention/live_insights.py    # test: recorded 30 s talk
@@ -145,7 +146,8 @@ def finish(feed, lag, out_dir, model):
             print(f"  {k}. {hms(ev['time'])}  ({ev['relative']:+.1f} spread)  said: “{ev['said'] or '-'}”")
         if not res[key]:
             print("  none stand out")
-    result = {"res": res, "episodes": [], "tips": [], "report": None, "n_words": len(words), "lag": lag}
+    result = {"res": res, "episodes": [], "chunks": [], "tips": [], "report": None, "n_words": len(words),
+              "lag": lag}
     if len(words) < 6:
         print("\nToo few transcript words for subjects (send 'word,<start>,<end>,<word>' lines or use --words).")
         return result
@@ -159,7 +161,8 @@ def finish(feed, lag, out_dir, model):
     print(f"\nWrote {out_dir / 'report.md'}, {out_dir / 'timeline.png'}, {out_dir / 'insights.json'}")
     data = json.loads((out_dir / "insights.json").read_text())
     llm = any(e.get("why") for e in data["episodes"])  # the keyword fallback writes no explanations or tips
-    result.update(episodes=data["episodes"], tips=data["insights"] if llm else [], report=out_dir / "report.md")
+    result.update(episodes=data["episodes"], chunks=data["chunks"], tips=data["insights"] if llm else [],
+                  report=out_dir / "report.md")
     return result
 
 

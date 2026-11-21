@@ -8,8 +8,8 @@ Steps
   2. Smooth + linearly detrend the attention signal, then give each chunk the mean
      attention over [start+lag, end+lag] and a z-score relative to the session.
   3. Pick high / low episodes (|z| above threshold, merged when adjacent, minimum length).
-  4. Label them with a local open-source LLM via Ollama (default qwen2.5:3b),
-     else a keyword fallback.
+  4. Label them, and give every chunk a short topic, with a local open-source LLM via
+     Ollama (default qwen2.5:3b), else a keyword fallback.
   5. Write report.md + timeline.png (+ insights.json).
 """
 
@@ -36,6 +36,7 @@ class Chunk:
     text: str
     att: float = float("nan")
     z: float = 0.0
+    topic: str = ""  # short topic label: LLM, else keywords
 
 
 @dataclass
@@ -153,6 +154,39 @@ Reply with JSON only, in this shape:
  "insights": ["<3-5 short bullets contrasting what high-attention parts have in common vs. the low ones, with concrete advice for the speaker>"]}}
 
 Describe correlations ("attention was lower during X"), not proven causes."""
+    return ask_llm(prompt, model)
+
+
+def label_chunks_with_llm(chunks: list[Chunk], model: str = MODEL) -> str | None:
+    """Ask for a short topic label per chunk, so any moment of the talk can be named."""
+    blocks = "\n".join(f'<passage id="{i}" time="{fmt(c.start)}-{fmt(c.end)}">{c.text}</passage>'
+                        for i, c in enumerate(chunks))
+    prompt = f"""Below is a talk, split into numbered passages in the order they were spoken.
+
+{blocks}
+
+Give every passage a short topic label (2-5 words) naming what it is about, e.g. "Why sleep matters".
+Consecutive passages about the same subject get the same label.
+Reply with JSON only, in this shape: {{"topics": [{{"id": 0, "topic": "<label>"}}]}}"""
+    return ask_llm(prompt, model)
+
+
+def apply_chunk_topics(chunks: list[Chunk], raw: str) -> bool:
+    """Merge the LLM's chunk topics in (keyword topics stay where it gave none); False if the reply is unusable."""
+    try:
+        m = re.search(r"\{.*\}", raw, re.S)
+        for item in json.loads(m.group(0) if m else raw).get("topics", []):
+            i = int(item["id"])
+            if 0 <= i < len(chunks) and str(item.get("topic", "")).strip():
+                chunks[i].topic = str(item["topic"]).strip()
+        return True
+    except (ValueError, TypeError, KeyError, AttributeError) as e:
+        print(f"Could not parse LLM chunk topics ({e}) - keeping keyword topics.")
+        return False
+
+
+def ask_llm(prompt: str, model: str = MODEL) -> str | None:
+    """One JSON-mode chat turn with a local Ollama model; None (with a hint printed) if that fails."""
     body = json.dumps({
         "model": model,
         "stream": False,
@@ -271,6 +305,8 @@ def analyse(words: list[dict], t: np.ndarray, s: np.ndarray, lag=2.0, z_thr=0.6,
     for e in episodes:
         e.keywords = keywords(e.text, bg)
         e.label = ", ".join(e.keywords[:3])
+    for c in chunks:
+        c.topic = ", ".join(keywords(c.text, bg, 3))
     return chunks, s_detr, episodes
 
 
@@ -287,6 +323,10 @@ def write_report(out_dir: Path, words: list[dict], t: np.ndarray, s: np.ndarray,
     source = f"{model} via Ollama" if insights is not None else "keyword fallback"
     if insights is None:
         insights = fallback_insights(episodes)
+    elif chunks:  # the LLM is reachable: name every chunk too
+        raw = label_chunks_with_llm(chunks, model)
+        if raw:
+            apply_chunk_topics(chunks, raw)
 
     plot(out_dir / "timeline.png", t, s, s_detr, chunks, episodes, lag)
 
@@ -303,8 +343,9 @@ def write_report(out_dir: Path, words: list[dict], t: np.ndarray, s: np.ndarray,
             if e.why:
                 lines += [e.why, ""]
             lines += [f"> {e.text[:400]}{'…' if len(e.text) > 400 else ''}", ""]
-    lines += ["## All chunks", "", "| time | attention | z | text |", "|---|---|---|---|"]
-    lines += [f"| {fmt(c.start)}–{fmt(c.end)} | {c.att:.2f} | {c.z:+.2f} | {c.text[:80]}… |" for c in chunks]
+    lines += ["## All chunks", "", "| time | topic | attention | z | text |", "|---|---|---|---|---|"]
+    lines += [f"| {fmt(c.start)}–{fmt(c.end)} | {c.topic} | {c.att:.2f} | {c.z:+.2f} | {c.text[:80]}… |"
+              for c in chunks]
     (out_dir / "report.md").write_text("\n".join(lines) + "\n")
     (out_dir / "insights.json").write_text(json.dumps(
         {"insights": insights, "episodes": [asdict(e) for e in episodes],

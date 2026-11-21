@@ -38,13 +38,12 @@ python attention/simulate.py --speed 0 > talk.csv                        # test 
 ```
 
 **Presenter feedback (with the transcript):** `live_insights.py` combines the live attention stream with
-`attention_insights/`. During the talk the presenter sees only a small retro meter in the corner: a
-column of blocks that goes up and down with the audience's attention. When the stream ends, a feedback
-card pops up with:
-
-- the attention profile of the whole talk;
-- the most and least engaging subjects, with when they came up, what was said and the related topics;
-- tips, when a local LLM (Ollama) is running. Without one, the subject labels are keywords.
+`attention_insights/`. During the talk the presenter sees only a small retro meter in the corner: an
+LED eye, after the LED ear of classroom noise meters, and nothing else. As the audience's attention
+rises, the iris ring and the eyelids light up from the middle of the eye out to its sides, and the whole
+eye turns from red to amber to green. When the stream ends, a feedback card pops up with the attention
+over the whole talk. Click (or drag along) the graph to see the topic at that moment; the arrow keys step
+through the talk. A local LLM (Ollama) names the topics; without one they are keywords from the transcript.
 
 `attention_insights` also writes `report.md`, `timeline.png` and `insights.json` into
 `attention_insights/data/live/`, and the card's **OPEN REPORT** button opens them. To end the talk early,

@@ -4,11 +4,11 @@ presenter_ui.py - what the presenter sees: a small attention meter during the ta
 Same warm retro look as message/popup.py (cream paper, ink outlines, hard shadows, Futura + American Typewriter),
 drawn with tkinter only.
 
-  Meter      a small always-on-top card in the bottom-right corner (drag it anywhere): a column of blocks that
-             goes up and down with the live attention, the current level and whether it is rising or falling.
-  Feedback   when the stream has ended: the attention profile of the whole talk, the most and least engaging
-             subjects with when they came up, what was said and the related topics, and tips when a local LLM
-             wrote them. "OPEN REPORT" opens the full attention_insights report.
+  Meter      a small always-on-top card in the bottom-right corner (drag it anywhere): an LED eye, like the LED
+             ear of classroom noise meters, that lights up and turns from red to green as attention rises. The
+             eye is the only indicator: no numbers to read mid-talk.
+  Feedback   when the stream has ended: the attention over the whole talk. Hovering over the graph shows the
+             topic at that moment. "OPEN REPORT" opens the full attention_insights report.
 
 live_insights.py runs this; run(feed, finish) is the entry point.
 """
@@ -17,19 +17,18 @@ import os
 import subprocess
 import sys
 import time
-from collections import deque
 from pathlib import Path
 
 from attention_profile import hms
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "message"))
-from popup import (EMPTY, INK, MUSTARD, ORANGE, ORANGE_HOVER, PAPER, RUST, TEAL, TEXT2,  # noqa: E402
+from popup import (INK, MUSTARD, ORANGE, ORANGE_HOVER, PAPER, RUST, TEAL, TEXT2,  # noqa: E402
                    ease_out_back, round_rect)
 
-PANEL, FAINT = "#efe3c9", "#cbbd9d"   # chart background, raw-sample line / grid
+PANEL, FAINT = "#efe3c9", "#cbbd9d"   # chart background, grid / topic changes
 DISPLAY, TYPEWRITER = ("Futura", "Arial Rounded MT Bold"), ("American Typewriter", "Courier New")
 SOUND = "/System/Library/Sounds/Hero.aiff"
-BLOCKS = 12                           # meter blocks, bottom to top: rust, orange, mustard, teal
+LED_RED, LED_AMBER, LED_GREEN = "#ff4a2e", "#ffb31f", "#6fe04a"  # the meter's eye: glowing LEDs on dark
 _fonts = {}
 
 
@@ -144,162 +143,150 @@ class RetroWindow:
         return x + w
 
 
+def led_color(level):
+    """Attention 0..1 -> LED colour: red (lost them), amber, green (with you)."""
+    stops = ((0.0, LED_RED), (0.5, LED_AMBER), (1.0, LED_GREEN))
+    level = min(max(level, 0.0), 1.0)
+    for (l0, c0), (l1, c1) in zip(stops, stops[1:]):
+        if level <= l1:
+            return mix(c0, c1, (level - l0) / (l1 - l0))
+    return LED_GREEN
+
+
 class Meter:
-    """The small live meter: blocks up to the current attention, a tick at the talk's typical level."""
-    W, HEADER = 132, 26
+    """The small live meter, after the LED ear of classroom noise meters but as an eye on a dark panel.
+
+    The whole eye takes the attention's colour (red -> amber -> green), and as attention rises the iris ring and
+    the eyelids fill up from the middle of the eye out to its sides: a dim red eye with only its centre lit is a
+    room that has drifted off, a fully lit green eye is a room that is with you. The pupil always glows."""
+    W, HEADER = 176, 26
+    LIDS, IRIS = 13, 14  # LEDs along each eyelid (corners shared), LEDs on the iris ring
 
     def __init__(self, win, on_close):
         self.rw = rw = RetroWindow(win, self.W, "ATTENTION", self.HEADER, 5, on_close, stripes=False)
         c = rw.c
-        top, bh, gap = self.HEADER + 16, 9, 3
-        self.x0, self.x1 = 34, self.W - 26
-        self.blocks = []
-        for i in range(BLOCKS):  # bottom to top
-            y = top + (BLOCKS - 1 - i) * (bh + gap)
-            color = RUST if i < 3 else ORANGE if i < 6 else MUSTARD if i < 9 else TEAL
-            self.blocks.append((c.create_rectangle(self.x0, y, self.x1, y + bh, fill=EMPTY, outline=""), color))
-        self.col = (top, top + BLOCKS * (bh + gap) - gap)
-        self.typical = c.create_polygon(0, 0, 0, 0, 0, 0, fill=INK, outline="", state="hidden")  # ▶ tick
-        y = self.col[1] + 26
-        self.value = c.create_text(self.W / 2 - 6, y, text="--", font=font("display", 20, "bold"), fill=INK)
-        self.trend = c.create_text(self.W / 2 + 34, y, text="", font=font("display", 12, "bold"), fill=TEAL)
-        self.status = c.create_text(self.W / 2, y + 24, text="waiting for data", font=font("typewriter", 10),
+        pad, ph = 12, 104
+        top = self.HEADER + pad
+        c.create_polygon(round_rect(pad, top, self.W - pad, top + ph, 10), fill=INK, outline=INK, width=2)
+        cx, cy, a, b = self.W / 2, top + ph / 2, (self.W - 2 * pad) / 2 - 14, 38  # eye centre, half width / height
+
+        def lid(u, sign):  # an almond: two parabolas meeting in the corners
+            return cx + a * u, cy + sign * b * (1 - u * u)
+
+        lids = {sign: [lid(i / 40 - 1, sign) for i in range(81)] for sign in (-1, 1)}
+        self.tracks = [c.create_line(*[v for p in pts for v in p], width=8, capstyle="round", smooth=True)
+                       for pts in lids.values()]  # both tracks first, so neither covers the corner LEDs
+        self.leds = []  # (halo, core, rank): rank 0 on the eye's vertical centre line, 1 at its sides
+        for sign, pts in lids.items():
+            # LEDs evenly spaced along the lid's length; the lower lid leaves the corners to the upper one
+            dist = [0.0]
+            for p, q in zip(pts, pts[1:]):
+                dist.append(dist[-1] + math.dist(p, q))
+            for k in range(self.LIDS) if sign < 0 else range(1, self.LIDS - 1):
+                d = dist[-1] * k / (self.LIDS - 1)
+                i = min(range(len(dist)), key=lambda j: abs(dist[j] - d))
+                self.leds.append(self.led(*pts[i], 3.2, abs(pts[i][0] - cx) / a))
+        ri = b * 0.62  # iris ring
+        self.tracks.append(c.create_oval(cx - ri, cy - ri, cx + ri, cy + ri, width=7, outline=""))
+        for k in range(self.IRIS):
+            ang = 2 * math.pi * k / self.IRIS
+            self.leds.append(self.led(cx + ri * math.cos(ang), cy + ri * math.sin(ang), 2.6, abs(math.cos(ang))))
+        self.pupil = self.led(cx, cy, 9.5, None)
+        self.glint = c.create_oval(cx - 5.5, cy - 5.5, cx - 1.5, cy - 1.5, outline="", fill=INK)
+
+        y = top + ph + 16  # status line under the eye: "waiting for data" / "analysing", empty while live
+        self.status = c.create_text(self.W / 2, y, text="waiting for data", font=font("typewriter", 10),
                                     fill=TEXT2)
-        cw, ch = rw.finish(y + 40)
+        cw, ch = rw.finish(y + 16)
         sw, sh = win.winfo_screenwidth(), win.winfo_screenheight()
         win.geometry(f"{cw}x{ch}+{sw - cw - 24}+{sh - ch - 90}")
-        self.shown, self.lit = 0.0, -1
+        self.shown, self.drawn = 0.0, None
+        self.paint(None)
 
-    def show(self, level, typical, trend, status):
-        """level / typical in 0..1 (None = nothing yet); trend > 0 rising, < 0 falling."""
+    def led(self, x, y, r, rank):
+        """One LED: a soft halo (only when lit) around a bright core."""
+        c, h = self.rw.c, r * 1.9
+        halo = c.create_oval(x - h, y - h, x + h, y + h, outline="", fill=INK)
+        core = c.create_oval(x - r, y - r, x + r, y + r, outline="", fill=INK)
+        return halo, core, rank
+
+    def paint(self, level):
+        """Light the eye for attention `level` (None: no data yet, everything off)."""
         c = self.rw.c
+        color = led_color(level) if level is not None else "#8c8170"
+        off, glow = mix(INK, color, 0.2), mix(INK, color, 0.38)
+        for track in self.tracks:
+            c.itemconfigure(track, **{"outline" if c.type(track) == "oval" else "fill": mix(INK, color, 0.12)})
+        for halo, core, rank in self.leds + [self.pupil]:
+            on = level is not None and (rank is None or rank <= level / 0.95)  # fully lit from 95 %
+            c.itemconfigure(halo, fill=glow if on else INK)
+            c.itemconfigure(core, fill=color if on else off)
+        c.itemconfigure(self.glint, fill=mix(color, "#ffffff", 0.75) if level is not None else off)
+
+    def show(self, level, status=""):
+        """level in 0..1 (None = nothing new). `status` is a short line under the eye ('' while live)."""
         if level is not None:
-            self.shown += (level - self.shown) * 0.25  # the column glides instead of jumping
-            lit = round(self.shown * BLOCKS)
-            if lit != self.lit:
-                for i, (block, color) in enumerate(self.blocks):
-                    c.itemconfigure(block, fill=color if i < lit else EMPTY)
-                self.lit = lit
-            c.itemconfigure(self.value, text=f"{round(level * 100)}%")
-            arrow, color = ("▲", TEAL) if trend > 0.03 else ("▼", RUST) if trend < -0.03 else ("▬", TEXT2)
-            c.itemconfigure(self.trend, text=arrow, fill=color)
-        if typical is not None:
-            y = self.col[1] - typical * (self.col[1] - self.col[0])
-            c.coords(self.typical, self.x0 - 14, y - 5, self.x0 - 14, y + 5, self.x0 - 5, y)
-            c.itemconfigure(self.typical, state="normal")
-        c.itemconfigure(self.status, text=status)
+            self.shown += (level - self.shown) * 0.25  # the eye brightens and dims smoothly instead of jumping
+            step = round(self.shown * 100)
+            if step != self.drawn:
+                self.paint(step / 100)
+                self.drawn = step
+        self.rw.c.itemconfigure(self.status, text=status)
 
 
-def draw_profile(c, x0, y0, x1, y1, res, highs, lows, lag):
-    """The attention profile in a panel: raw samples, smoothed curve, typical level, numbered high (H) and low
-    (L) passages, time axis underneath. Returns the y below the axis labels."""
-    prof = res["profile"]
-    t = prof["t"]
-    raw = [v if v == v else None for v in prof["score"]]  # NaN -> None (gap)
-    sm = [v if v == v else None for v in prof["smoothed"]]
-    vals = [v for v in raw if v is not None]
-    unit = 0 <= min(vals) and max(vals) <= 1  # a 0..1 score: show the axis as percent
-    lo, hi = (0.0, 1.0) if unit else (min(vals), max(vals))
-    if hi - lo < 1e-9:
-        lo, hi = lo - 1, hi + 1
-    t0, t1 = t[0], max(t[-1], t[0] + 1)
-    c.create_polygon(round_rect(x0, y0, x1, y1, 8), fill=PANEL, outline=INK, width=2)
-    px0, px1, py0, py1 = x0 + 42, x1 - 14, y0 + 14, y1 - 12
+def topic_spans(result):
+    """(start, end, topic) in attention time: the topic markers in the data if there were any, else the
+    transcript chunks (spoken at t, seen in the attention at t + lag)."""
+    res = result["res"]
+    if res["summary"]["topics_from"] == "markers":
+        return sorted((d["start"], d["end"], d["topic"]) for d in res["topics"])
+    lag = result["lag"]
+    return [(c["start"] + lag, c["end"] + lag, c["topic"]) for c in result.get("chunks", []) if c.get("topic")]
 
-    def X(v):
-        return px0 + (min(max(v, t0), t1) - t0) / (t1 - t0) * (px1 - px0)
 
-    def Y(v):
-        return py1 - (v - lo) / (hi - lo) * (py1 - py0)
-
-    small = font("typewriter", 9)
-    for k in (0.25, 0.5, 0.75):
-        v = lo + k * (hi - lo)
-        c.create_line(px0, Y(v), px1, Y(v), fill=FAINT, dash=(2, 4))
-        c.create_text(px0 - 8, Y(v), text=f"{round(v * 100)}%" if unit else f"{v:.3g}", anchor="e", font=small,
-                      fill=TEXT2)
-    placed = []  # tag boxes so far: passages close together stack their tags instead of overlapping
-    for items, color, tag in ((highs, TEAL, "H"), (lows, RUST, "L")):
-        for i, e in enumerate(items, 1):
-            xa, xb = X(e["start"] + lag), X(e["end"] + lag)
-            if xb - xa < 3:
-                xa, xb = xa - 2, xb + 2
-            c.create_rectangle(xa, py0 - 6, xb, py1 + 4, fill=mix(PANEL, color, 0.28), outline="")
-            ty = py0 - 3
-            while any(xa + 4 < b[2] + 2 and b[0] < xa + 30 and ty < b[3] and b[1] < ty + 14 for b in placed):
-                ty += 15
-            label = c.create_text(xa + 4, ty, text=f"{tag}{i}", anchor="nw", font=font("typewriter", 10, "bold"),
-                                  fill=INK)
-            placed.append(c.bbox(label))
-    typical = res["summary"]["typical"]
-    c.create_line(px0, Y(typical), px1, Y(typical), fill=TEXT2, dash=(5, 3))
-    c.create_text(px1 - 2, Y(typical) - 3, text="typical", anchor="se", font=small, fill=TEXT2)
-    for series, color, width in ((raw, FAINT, 1), (sm, INK, 2.5)):
-        run = []
-        for tv, v in zip(list(t) + [None], series + [None]):  # one line per stretch without gaps
-            if v is None or tv is None:
-                if len(run) >= 4:
-                    c.create_line(*run, fill=color, width=width, smooth=True, capstyle="round", joinstyle="round")
-                run = []
-            else:
-                run += [X(tv), Y(v)]
-    step = next((s for s in (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800) if (t1 - t0) / s <= 8), 3600)
-    tick = math.ceil(t0 / step) * step
-    while tick <= t1 + 1e-6:
-        c.create_line(X(tick), y1, X(tick), y1 + 4, fill=INK, width=1.5)
-        c.create_text(X(tick), y1 + 6, text=hms(tick), anchor="n", font=small, fill=TEXT2)
-        tick += step
-    return y1 + 22
+def topic_at(spans, t, reach=3.0):
+    """The topic at attention time t: the span around it, else the nearest one within `reach` seconds."""
+    best, gap = None, reach
+    for a, b, name in spans:
+        d = 0.0 if a <= t <= b else min(abs(t - a), abs(t - b))
+        if d <= gap:
+            best, gap = name, d
+    return best
 
 
 class Feedback:
-    """The card after the talk. result: res (attention profile), episodes (attention_insights passages),
-    tips, report (path or None), n_words, lag."""
-    W, PAD, HEADER = 720, 24, 34
+    """The card after the talk: the attention over the whole talk. Hovering over the graph shows the topic at
+    that moment. result: res (attention profile), chunks (transcript chunks with topics), report (path or None),
+    n_words, lag."""
+    W, PAD, HEADER, GRAPH_H = 720, 24, 34, 280
 
     def __init__(self, win, result, on_close, sound=True):
         self.win, self.on_close = win, on_close
         self.rw = rw = RetroWindow(win, self.W, "PRESENTATION FEEDBACK", self.HEADER, 7, self.leave)
         c, W, PAD = rw.c, self.W, self.PAD
-        res, lag = result["res"], result["lag"]
-        highs, lows = self.subjects(result)
+        res = result["res"]
+        self.spans = topic_spans(result)
 
         y = self.HEADER + PAD - 6
         c.create_text(PAD, y, anchor="nw", text="How the room felt", font=font("display", 22, "bold"), fill=INK)
         raw = [v for v in res["profile"]["score"] if v == v]
         mean = sum(raw) / len(raw)
         unit = 0 <= min(raw) and max(raw) <= 1
-        bits = [hms(res["summary"]["duration_s"]), f"{result['n_words']} words heard" if result["n_words"] else
-                "no transcript", f"average attention {round(mean * 100)}%" if unit else f"average {mean:.3g}"]
-        if res["peaks"]:
-            bits.append(f"most engaged at {hms(res['peaks'][0]['time'])}")
+        bits = [hms(res["summary"]["duration_s"]), f"average attention {round(mean * 100)}%" if unit else
+                f"average {mean:.3g}", "click the graph to see the topic" if self.spans else
+                "no transcript, so no topics"]
         y = c.bbox(c.create_text(PAD, y + 34, anchor="nw", text="  ·  ".join(bits),
                                  font=font("typewriter", 12), fill=TEXT2))[3] + 14
-        y = draw_profile(c, PAD, y, W - PAD, y + 180, res, highs, lows, lag) + 10
-
-        col_w = (W - 2 * PAD - 28) / 2
-        bottoms = []
-        for x, title, color, items, tag, empty in (
-                (PAD, "MOST ENGAGING", TEAL, highs, "H", "Nothing stood out as clearly more engaging."),
-                (PAD + col_w + 28, "LEAST ENGAGING", RUST, lows, "L", "Nothing stood out as clearly less engaging.")):
-            bottoms.append(self.column(x, y, col_w, title, color, items, tag, empty, result["n_words"]))
-        y = max(bottoms) + 6
-
-        if result["tips"]:
-            y = self.chip(PAD, y + 8, "TIPS", MUSTARD) + 8
-            for tip in result["tips"][:4]:
-                y = c.bbox(c.create_text(PAD + 4, y, anchor="nw", text=f"•  {tip}", width=W - 2 * PAD - 8,
-                                         font=font("typewriter", 12), fill=INK))[3] + 6
+        y = self.graph(PAD, y, W - PAD, y + self.GRAPH_H, res, unit)
 
         y += 14  # buttons, right-aligned
         f = font("display", 12, "bold")
         x = W - PAD - (f.measure("THANKS!") + 36) - 3
         if result["report"]:
             report = Path(result["report"])
-            x -= f.measure("OPEN REPORT") + 36 + 14
-            rw.button(x, y, "OPEN REPORT", False, lambda: subprocess.Popen(["open", str(report)])
+            rw.button(x - (f.measure("OPEN REPORT") + 36 + 14), y, "OPEN REPORT", False,
+                      lambda: subprocess.Popen(["open", str(report)])
                       if sys.platform == "darwin" else os.startfile(str(report)))  # noqa: S606
-            x = W - PAD - (f.measure("THANKS!") + 36) - 3
         rw.button(x, y, "THANKS!", True, self.leave)
         cw, ch = rw.finish(y + 32 + PAD)
 
@@ -308,57 +295,116 @@ class Feedback:
         self.start = (self.target[0], self.target[1] - 40)
         win.geometry(f"{cw}x{ch}+{self.start[0]}+{self.start[1]}")
         chime(sound)
+        win.focus_force()  # so the arrow keys move the graph's marker
         self.t0, self.phase = time.monotonic(), "in"
         win.after(16, self.tick)
 
-    @staticmethod
-    def subjects(result):
-        """Up to three most and three least engaging passages (attention_insights), else the profile's moments."""
-        eps = result["episodes"]
-        highs = sorted([e for e in eps if e["kind"] == "high"], key=lambda e: -e["z"])[:3]
-        lows = sorted([e for e in eps if e["kind"] == "low"], key=lambda e: e["z"])[:3]
-        if not eps:  # no transcript passages: fall back to the attention profile's high and low moments
-            lag, res = result["lag"], result["res"]
-            for key, items, name in (("peaks", highs, "High point"), ("dips", lows, "Low point")):
-                for ev in res[key][:3]:
-                    items.append({"start": ev["start"] - lag, "end": ev["end"] - lag, "label": name, "keywords": [],
-                                  "text": ev.get("said", ""), "why": ""})
-        return highs, lows
-
-    def chip(self, x, y, text, color):
+    def graph(self, x0, y0, x1, y1, res, unit):
+        """The attention trajectory in a panel: the smoothed attention over time, faint lines where the topic
+        changes, time axis underneath; hovering shows the topic. Returns the y below the axis labels."""
         c = self.rw.c
-        f = font("display", 11, "bold")
-        w = f.measure(text) + 20
-        c.create_polygon(round_rect(x, y, x + w, y + 22, 11), fill=color, outline=INK, width=2)
-        c.create_text(x + w / 2, y + 11, text=text, font=f, fill=PAPER if color != MUSTARD else INK)
-        return y + 22
+        prof = res["profile"]
+        t = prof["t"]
+        sm = [v if v == v else None for v in prof["smoothed"]]  # NaN -> None (gap)
+        vals = [v for v in sm if v is not None]
+        lo, hi = (0.0, 1.0) if unit else (min(vals), max(vals))
+        if hi - lo < 1e-9:
+            lo, hi = lo - 1, hi + 1
+        t0, t1 = t[0], max(t[-1], t[0] + 1)
+        c.create_polygon(round_rect(x0, y0, x1, y1, 8), fill=PANEL, outline=INK, width=2)
+        px0, px1, py0, py1 = x0 + 46, x1 - 16, y0 + 16, y1 - 12
+        X = lambda v: px0 + (min(max(v, t0), t1) - t0) / (t1 - t0) * (px1 - px0)  # noqa: E731
+        Y = lambda v: py1 - (v - lo) / (hi - lo) * (py1 - py0)  # noqa: E731
 
-    def column(self, x, y, w, title, color, items, tag, empty, n_words):
-        c = self.rw.c
-        y = self.chip(x, y, title, color) + 10
-        if not items:
-            note = empty if n_words else empty + " (No transcript, so no subjects.)"
-            return c.bbox(c.create_text(x, y, anchor="nw", text=note, width=w, font=font("typewriter", 12),
-                                        fill=TEXT2))[3]
-        for i, e in enumerate(items, 1):
-            when = f"{tag}{i}   {hms(e['start'])}–{hms(e['end'])}"
-            y = c.bbox(c.create_text(x, y, anchor="nw", text=when, font=font("typewriter", 10, "bold"), fill=TEXT2))[3] + 1
-            label = e["label"][:1].upper() + e["label"][1:]
-            y = c.bbox(c.create_text(x, y, anchor="nw", text=label, width=w, font=font("display", 15, "bold"),
-                                     fill=INK))[3] + 2
-            if e.get("keywords"):
-                related = "related: " + " · ".join(e["keywords"][:5])
-                y = c.bbox(c.create_text(x, y, anchor="nw", text=related, width=w, font=font("typewriter", 11),
-                                         fill=TEXT2))[3] + 2
-            if e.get("why"):
-                y = c.bbox(c.create_text(x, y, anchor="nw", text=e["why"], width=w, font=font("typewriter", 11),
-                                         fill=INK))[3] + 2
-            if e.get("text"):
-                text = e["text"] if len(e["text"]) <= 150 else e["text"][:147].rsplit(" ", 1)[0] + " …"
-                y = c.bbox(c.create_text(x, y, anchor="nw", text=f"“{text}”", width=w,
-                                         font=font("typewriter", 11), fill=TEXT2))[3]
-            y += 12
-        return y
+        small = font("typewriter", 9)
+        for k in (0, 0.25, 0.5, 0.75, 1):
+            v = lo + k * (hi - lo)
+            c.create_line(px0, Y(v), px1, Y(v), fill=FAINT, dash=(2, 4))
+            c.create_text(px0 - 8, Y(v), text=f"{round(v * 100)}%" if unit else f"{v:.3g}", anchor="e",
+                          font=small, fill=TEXT2)
+        for (_, _, prev), (a, _, name) in zip(self.spans, self.spans[1:]):
+            if name != prev and t0 < a < t1:
+                c.create_line(X(a), py0, X(a), py1, fill=FAINT, width=1.5)
+        run = []
+        for tv, v in zip(list(t) + [None], sm + [None]):  # one curve (and fill) per stretch without gaps
+            if v is None or tv is None:
+                if len(run) >= 4:
+                    c.create_polygon(run[0], py1, *run, run[-2], py1, fill=mix(PANEL, TEAL, 0.22), outline="")
+                    c.create_line(*run, fill=INK, width=2.5, smooth=True, capstyle="round", joinstyle="round")
+                run = []
+            else:
+                run += [X(tv), Y(v)]
+        step = next((s for s in (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800) if (t1 - t0) / s <= 8), 3600)
+        tick = math.ceil(t0 / step) * step
+        while tick <= t1 + 1e-6:
+            c.create_line(X(tick), y1, X(tick), y1 + 4, fill=INK, width=1.5)
+            c.create_text(X(tick), y1 + 6, text=hms(tick), anchor="n", font=small, fill=TEXT2)
+            tick += step
+
+        # the marker: shown from the start; a click or drag places it (it stays there), hovering previews other
+        # moments when the window gets mouse moves, and the arrow keys step it
+        self.points = [(X(tv), Y(v), tv, v) for tv, v in zip(t, sm) if v is not None]
+        self.box, self.panel, self.unit, self.marked = (px0, py0, px1, py1), (x0, y0, x1, y1 + 22), unit, None
+        # start at the first moment with a topic (the talk's first seconds often have none)
+        self.pinned = next((k for k, p in enumerate(self.points) if topic_at(self.spans, p[2])), 0)
+        for ev in ("<Motion>", "<Button-1>", "<B1-Motion>"):
+            c.bind(ev, lambda e, ev=ev: self.pointer(e.x, e.y, pin=ev != "<Motion>"))
+        c.bind("<Leave>", lambda _e: self.mark(self.pinned))
+        step = max(1, len(self.points) // 80)
+        self.win.bind("<Left>", lambda _e: self.pin(self.pinned - step))
+        self.win.bind("<Right>", lambda _e: self.pin(self.pinned + step))
+        self.mark(self.pinned)
+        return y1 + 22
+
+    def pointer(self, mx, my, pin):
+        """Mouse at (mx, my): anywhere on the graph's panel (axis labels too), mark the moment nearest in time
+        (and keep it there on a click / drag); elsewhere, show the kept one."""
+        x0, y0, x1, y1 = self.panel
+        if not self.points:
+            return
+        if x0 <= mx <= x1 and y0 <= my <= y1:
+            i = min(range(len(self.points)), key=lambda k: abs(self.points[k][0] - mx))
+            self.pin(i) if pin else self.mark(i)
+        else:
+            self.mark(self.pinned)
+
+    def pin(self, i):
+        if self.points:
+            self.pinned = min(max(i, 0), len(self.points) - 1)
+            self.mark(self.pinned)
+
+    def mark(self, i):
+        """A guide line, a dot on the curve and a tooltip with the time and topic of moment i."""
+        if not self.points or i == self.marked:
+            return
+        self.marked = i
+        c, unit = self.rw.c, self.unit
+        c.delete("hover")
+        px0, py0, px1, py1 = self.box
+        x, y, tv, v = self.points[i]
+        c.create_line(x, py0, x, py1, fill=INK, dash=(3, 3), tags=("hover",))
+        c.create_oval(x - 5, y - 5, x + 5, y + 5, fill=ORANGE, outline=INK, width=2, tags=("hover",))
+
+        topic = topic_at(self.spans, tv)
+        level = f"{round(v * 100)}% attention" if unit else f"attention {v:.3g}"
+        head = c.create_text(0, 0, anchor="nw", text=f"{hms(tv)}  ·  {level}", font=font("typewriter", 10),
+                             fill=TEXT2, tags=("hover",))
+        body = c.create_text(0, 0, anchor="nw", text=topic or "no topic here", width=240, tags=("hover",),
+                             font=font("display", 14, "bold") if topic else font("typewriter", 11),
+                             fill=INK if topic else TEXT2)
+        hb, bb = c.bbox(head), c.bbox(body)
+        w = max(hb[2] - hb[0], bb[2] - bb[0]) + 24
+        h = (hb[3] - hb[1]) + (bb[3] - bb[1]) + 22
+        tx = min(max(x - w / 2, px0 - 30), px1 + 10 - w)
+        ty = y - h - 16 if y - h - 16 >= py0 - 10 else y + 16  # above the dot, below it near the top
+        c.create_polygon(round_rect(tx + 3, ty + 3, tx + w + 3, ty + h + 3, 7), fill=INK, outline=INK, width=2,
+                         tags=("hover",))
+        card = c.create_polygon(round_rect(tx, ty, tx + w, ty + h, 7), fill=PAPER, outline=INK, width=2,
+                                tags=("hover",))
+        c.coords(head, tx + 12, ty + 9)
+        c.coords(body, tx + 12, ty + 11 + hb[3] - hb[1])
+        c.tag_raise(head, card)
+        c.tag_raise(body, card)
 
     def tick(self):
         e = time.monotonic() - self.t0
@@ -393,7 +439,6 @@ class App:
         self.meter = Meter(root, self.end_now)
         root.attributes("-alpha", 1.0)
         self.idx, self.ema, self.t_ema, self.lo, self.hi = 0, None, None, None, None
-        self.history, self.values = deque(), []
         self.result, self.state, self.dots = None, "live", 0
         root.after(50, self.tick)
 
@@ -410,31 +455,24 @@ class App:
         with f.lock:
             new = list(zip(f.prof.t[self.idx:], f.prof.s[self.idx:]))
             self.idx += len(new)
-        for t, v in new:  # attention smoothed over ~2 s of talk time, so the column moves but doesn't flicker
+        for t, v in new:  # attention smoothed over ~2 s of talk time, so the eye changes but doesn't flicker
             self.lo, self.hi = (v, v) if self.lo is None else (min(self.lo, v), max(self.hi, v))
             if self.ema is None:
                 self.ema, self.t_ema = v, t
             else:
                 k = 1 - math.exp(-max(t - self.t_ema, 1e-3) / 2.0)
                 self.ema, self.t_ema = self.ema + k * (v - self.ema), t
-            self.history.append((t, self.ema))
-            self.values.append(v)
-            while self.history and self.history[0][0] < t - 5:
-                self.history.popleft()
         if self.state == "live":
             if self.ema is None:
-                self.meter.show(None, None, 0, "waiting for data")
+                self.meter.show(None, "waiting for data")
             else:
-                level = self.norm(self.ema)
-                trend = level - self.norm(self.history[0][1])
-                values = sorted(self.values)
-                self.meter.show(level, self.norm(values[len(values) // 2]), trend, "live")
+                self.meter.show(self.norm(self.ema))
             if f.done:
                 self.state = "analysing"
                 self.threading.Thread(target=self.run_finish, daemon=True).start()
         elif self.state == "analysing":
             self.dots = (self.dots + 1) % 24
-            self.meter.show(None, None, 0, "analysing" + "." * (self.dots // 6))
+            self.meter.show(None, "analysing" + "." * (self.dots // 6))
             if self.result is not None:
                 self.state = "feedback"
                 if self.result is False:  # not enough data for feedback
