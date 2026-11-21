@@ -1,7 +1,14 @@
-"""Guided data collection for the attention model: one person, nine short scenarios, about four minutes.
+"""Guided data collection for the attention model: one person, ten short scenarios, about five minutes.
 
     python collect.py --person anna
     python collect.py --person anna --device 1     # name the colour camera index
+    python collect.py --person anna --only look_down_phone_away
+                                                   # record just that scenario, to add to earlier recordings
+    python collect.py --list                       # the scenario names
+
+Every run writes its own file, so a later run with --only adds to a person's
+earlier recording instead of replacing it. Use the same --person name as
+before: train.py puts all files of one name together.
 
 The window tells the person exactly what to do. Each scenario has a "get
 ready" page (what to set up, then SPACE), a 3-second countdown, and the
@@ -30,8 +37,9 @@ recording again.
 The scenarios are chosen so that each signal is seen both with and without
 real distraction:
 
-  on task      phone away / phone lying on the desk / looking down at keyboard
-               or notes beside the phone / holding the phone but reading the screen
+  on task      phone away / looking down at the keyboard with the phone away /
+               phone lying on the desk / looking down at keyboard or notes beside
+               the phone / holding the phone but reading the screen
   distracted   scrolling above the desk / in the lap / with the phone flat on the desk
   changing     two 2-second glances at the phone (attention should hardly dip),
                and work -> 20 s of scrolling -> work
@@ -60,6 +68,7 @@ WINDOW = "attention data collection"
 WIDTH, HEIGHT = 1280, 720
 SPACE = 32
 COUNTDOWN_S = 3.0     # "start now" time before a recording begins
+FROZEN_NOTE_S = 3.0   # a recording whose face reading stood still this long gets a note
 
 SIGNAL_COLUMNS = ("face_down", "face_down_score", "gaze_down", "gaze_down_score", "color_phone", "phone",
                   "phone_in_hand", "gaze_down_x_phone_in_hand")
@@ -75,6 +84,11 @@ SCENARIOS = (
         "Hands on the keyboard and mouse.",
         "Read and type the way you normally work."),
         (Phase(15, WORK, False),)),
+    Scenario("look_down_phone_away", "Looking down at the keyboard, phone out of sight", (
+        "Keep your phone away: pocket or bag, out of sight.",
+        "Look down at the keyboard while you type.",
+        "Keep your eyes on the keyboard, not on the screen."),
+        (Phase(15, "LOOK DOWN AT THE KEYBOARD AND TYPE", False),)),
     Scenario("work_phone_on_desk", "Working, phone lying on the desk", (
         "Lay your phone flat on the desk beside the keyboard, screen up.",
         "In the small grey picture the phone should get a red box.",
@@ -149,6 +163,22 @@ def beep(kind):
     threading.Thread(target=play, daemon=True).start()
 
 
+def longest_frozen(rows):
+    """The longest time, in seconds, that the face measurement did not change at all.
+
+    When the head is bowed far down the camera stops updating its face data,
+    and the face and gaze signals stay at their last value.
+    """
+    longest, since = 0.0, None
+    for before, row in zip(rows, rows[1:]):
+        if row["pitch_deg"] == before["pitch_deg"]:
+            since = before["t"] if since is None else since
+            longest = max(longest, row["t"] - since)
+        else:
+            since = None
+    return longest
+
+
 class Session:
     """One person's run through the scenarios: what is on screen now, and the rows recorded."""
 
@@ -161,6 +191,7 @@ class Session:
         self._mark = 0.0             # when the current countdown or recording started
         self._rows, self._phase_i = [], 0
         self._ticks = 0              # countdown beeps played so far
+        self.frozen_s = 0.0          # longest time the face reading stood still in the last recording
 
     # --- what the drawing needs -------------------------------------------------
     @property
@@ -221,6 +252,7 @@ class Session:
         t = self.elapsed(step.now)
         if t >= self.total_s:
             self.done[self.scenario.name] = self._rows
+            self.frozen_s = longest_frozen(self._rows)
             self._save()
             beep("end")
             self.mode = "saved"
@@ -306,11 +338,14 @@ def draw(session, step):
 
     if mode == "intro":
         centred(canvas, "ATTENTION DATA COLLECTION", 60, 1.2)
+        seconds = sum(p.seconds for s in session.scenarios for p in s.phases)
+        minutes = max(round((seconds + 20 * n) / 60), 1)       # with the time to read each "get ready" page
         left = previews(canvas, session, step) - 20
         y = bullets(canvas, ("Turn your sound on.",
                              "Three short beeps count down 3, 2, 1. The long beep means: start.",
                              "A beep after that means: change what you are doing.",
-                             f"There are {n} short scenarios, about 4 minutes."), 130, left)
+                             ("There is 1 short scenario." if n == 1 else
+                              f"There are {n} short scenarios, about {minutes} minutes.")), 130, left)
         bullets(canvas, ("Each one first shows what to set up. Take your time there.",
                          "Then do exactly what the large text says, until the beep.",
                          "A double beep means: stop, and look at the laptop again.",
@@ -368,8 +403,13 @@ def draw(session, step):
         left = previews(canvas, session, step) - 20
         text(canvas, "DONE. Look at the laptop again.", 30, 130, 1.2, GREEN, 3)
         rows = len(session.done.get(session.scenario.name, []))
-        bullets(canvas, (f"{rows} rows recorded for this scenario.",
-                         "If something went wrong, press R to do it again."), 200, left)
+        y = bullets(canvas, (f"{rows} rows recorded for this scenario.",
+                             "If something went wrong, press R to do it again."), 200, left)
+        if session.frozen_s >= FROZEN_NOTE_S:
+            y = max(y, 350) + 30
+            text(canvas, f"Note: the camera lost your face for {session.frozen_s:.0f} s of this recording,", 30, y, 0.8, YELLOW)
+            text(canvas, "so the face and gaze values stood still. Press R to redo it with your head", 30, y + 36, 0.8, YELLOW)
+            text(canvas, "a little higher, or SPACE to keep it as it is.", 30, y + 72, 0.8, YELLOW)
         last = session.index + 1 == n
         centred(canvas, "Press SPACE to finish" if last else "Press SPACE for the next scenario", 680, 1.2, YELLOW, 3)
 
@@ -396,10 +436,26 @@ def run(session, show=None, wait_key=None):
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--person", required=True, help="a short name for whoever is sitting at the laptop")
+    p.add_argument("--person", help="a short name for whoever is sitting at the laptop")
+    p.add_argument("--only", help="record only these scenarios (names from --list, comma-separated)")
+    p.add_argument("--list", action="store_true", help="show the scenario names and stop")
     p.add_argument("--device", type=int, help="colour camera index (default: find the LogiInsight camera)")
     p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     args = p.parse_args()
+    if args.list:
+        for s in SCENARIOS:
+            print(f"{s.name:28s} {sum(ph.seconds for ph in s.phases):3d} s   {s.title}")
+        return
+    if not args.person:
+        p.error("--person is required")
+    scenarios = SCENARIOS
+    if args.only:
+        wanted = [name.strip() for name in args.only.split(",") if name.strip()]
+        unknown = [name for name in wanted if name not in {s.name for s in SCENARIOS}]
+        if unknown or not wanted:
+            sys.exit(f"ERROR: no scenario named {', '.join(unknown) or '(nothing)'}. "
+                     f"The names: {', '.join(s.name for s in SCENARIOS)}")
+        scenarios = tuple(s for s in SCENARIOS if s.name in wanted)
 
     from engine import Engine, EngineError
     try:
@@ -408,7 +464,7 @@ def main():
         sys.exit(f"ERROR: {e}")
     person = "".join(c for c in args.person if c.isalnum() or c in "-_") or "person"
     path = DATA_DIR / f"attention_{person}_{time.strftime('%Y%m%d_%H%M%S')}.csv"
-    session = Session(person, engine, path)
+    session = Session(person, engine, path, scenarios)
     try:
         run(session)
     except KeyboardInterrupt:
@@ -417,7 +473,7 @@ def main():
         engine.close()
         cv2.destroyAllWindows()
     rows = sum(len(r) for r in session.done.values())
-    print(f"{len(session.done)} of {len(SCENARIOS)} scenarios, {rows} rows"
+    print(f"{len(session.done)} of {len(scenarios)} scenarios, {rows} rows"
           + (f", saved to {path}" if session.done else "; nothing saved"))
 
 

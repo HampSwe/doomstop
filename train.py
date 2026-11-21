@@ -60,6 +60,8 @@ def load(folder):
                 row["file"] = path.name
                 if "gaze_down_x_phone_in_hand" not in row:
                     row["gaze_down_x_phone_in_hand"] = number(row, "gaze_down") * number(row, "phone_in_hand")
+                if "gaze_down_x_phone" not in row:          # and the old product for the newer recordings
+                    row["gaze_down_x_phone"] = number(row, "gaze_down") * number(row, "phone")
                 rows.append(row)
     return rows
 
