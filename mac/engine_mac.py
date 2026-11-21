@@ -1,0 +1,237 @@
+"""MAC ONLY. engine.Engine for macOS, where the LogiInsight colour camera is not listed.
+
+macOS's camera list only offers the camera's infrared stream ("LVNext CPD
+Camera"), so cv2.VideoCapture can never open the colour one. This engine reads
+the colour stream straight over USB with pyuvc instead, which needs sudo. While
+it holds the camera, macOS lets go of the whole device, including its USB
+network link, so the camera's own face AI can't be reached either. The
+478-point face mesh is therefore computed on this Mac with MediaPipe's
+FaceLandmarker, which uses the same landmark layout, and fed to
+look_down.LookDownDetector exactly as the camera's mesh is.
+
+MacEngine has the same interface as engine.Engine (det, feed, worker,
+started, step(), raw(), face(), close()), so dashboard.py and collect.py run
+unchanged through mac/run_mac.py. On Windows and Linux, use engine.Engine.
+
+The infrared stream is used if macOS still offers it while pyuvc holds the
+camera; otherwise the infrared signals (phone, phone_in_hand,
+gaze_down_x_phone) are off (None) and the panel says "waiting for infrared".
+"""
+
+import math
+import sys
+import time
+import urllib.request
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+import cv2  # noqa: E402
+import numpy as np  # noqa: E402
+
+import engine  # noqa: E402
+from look_down import FACE_LOST_S, LookDownDetector, features, signals, start_phone_worker  # noqa: E402
+
+MESH_MODEL = ROOT / "models" / "face_landmarker.task"
+MESH_URL = ("https://storage.googleapis.com/mediapipe-models/face_landmarker/"
+            "face_landmarker/float16/latest/face_landmarker.task")
+
+
+class LocalMesh:
+    """MediaPipe FaceLandmarker on this Mac, returning a face shaped like the camera's JSON."""
+
+    def __init__(self):
+        import mediapipe as mp
+        from mediapipe.tasks.python import BaseOptions, vision
+
+        if not MESH_MODEL.exists():
+            print(f"Downloading the face mesh model to {MESH_MODEL} ...")
+            MESH_MODEL.parent.mkdir(exist_ok=True)
+            urllib.request.urlretrieve(MESH_URL, MESH_MODEL)
+        self._mp = mp
+        self._lm = vision.FaceLandmarker.create_from_options(vision.FaceLandmarkerOptions(
+            base_options=BaseOptions(model_asset_path=str(MESH_MODEL)),
+            running_mode=vision.RunningMode.VIDEO, num_faces=1))
+        self._last_ms = -1
+
+    def face(self, frame_bgr, now):
+        ms = int(now * 1000)
+        if ms <= self._last_ms:          # VIDEO mode needs strictly increasing timestamps
+            ms = self._last_ms + 1
+        self._last_ms = ms
+        rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+        result = self._lm.detect_for_video(self._mp.Image(image_format=self._mp.ImageFormat.SRGB, data=rgb), ms)
+        if not result.face_landmarks:
+            return None
+        h, w = frame_bgr.shape[:2]
+        # pixels, with depth on the x scale (MediaPipe's z uses roughly the same scale as x)
+        pts = [[p.x * w, p.y * h, p.z * w] for p in result.face_landmarks[0]]
+        xs, ys = [p[0] for p in pts], [p[1] for p in pts]
+        return {"landmarks": pts, "bbox": [min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)]}
+
+    def close(self):
+        self._lm.close()
+
+
+class LocalFaceFeed:
+    """look_down.FaceFeed, but fed by LocalMesh on each colour frame instead of the camera's AI."""
+
+    def __init__(self):
+        self.mesh = LocalMesh()
+        self.det = LookDownDetector()
+        self.face = None
+        self.features = None
+        self.n_mesh = 0
+        self._last_face_t = time.time()
+
+    def poll(self, now, frame):
+        self.face = self.mesh.face(frame, now)
+        if not self.face:
+            return None
+        self._last_face_t = now
+        landmarks = self.face["landmarks"]
+        f = features(landmarks)
+        if f is not None:
+            self.n_mesh += 1
+            self.features = f
+            self.det.update(f, now)
+        return landmarks
+
+    def face_lost(self, now):
+        return now - self._last_face_t > FACE_LOST_S
+
+
+def to_bgr(f):
+    """A writable BGR copy of a pyuvc frame (pyuvc reuses its buffers)."""
+    try:
+        img = f.bgr
+        if img is not None:
+            return img.copy()
+    except Exception:
+        pass
+    return cv2.imdecode(np.frombuffer(bytes(f.jpeg_buffer), np.uint8), cv2.IMREAD_COLOR)
+
+
+class ColourUSB:
+    """The LogiInsight colour stream over USB (pyuvc), with a cv2.VideoCapture-like read()."""
+
+    def __init__(self, width=1280, height=720, fps=30):
+        import uvc
+
+        self._uvc = uvc
+        devs = [d for d in uvc.device_list() if d["name"].startswith("LVNext")]
+        if not devs:
+            raise engine.EngineError("the LogiInsight camera is not on USB. Plug it in directly "
+                                     "(no hub) and wait about 20 s.")
+        try:
+            self.cap = uvc.Capture(devs[0]["uid"])
+        except uvc.OpenError as e:
+            raise engine.EngineError(f"could not open the camera over USB ({e}). Run with sudo, and close "
+                                     "other camera apps (phone_detect, Zoom, FaceTime, browser).") from None
+        modes = [m for m in self.cap.available_modes if m.format_name == "MJPG"] or list(self.cap.available_modes)
+        if not modes:
+            self.cap.close()
+            raise engine.EngineError("the camera offered no video modes")
+        best = min(modes, key=lambda m: (abs(m.width * m.height - width * height), abs(m.fps - fps)))
+        self.cap.frame_mode = best
+        if best.width < best.height:
+            print("WARNING: this looks like the infrared stream, not the colour one")
+        self.description = (f"LogiInsight colour over USB (pyuvc)  {best.width}x{best.height} "
+                            f"@ {best.fps}fps {best.format_name}")
+        self._errors = 0
+
+    def read(self):
+        try:
+            frame = to_bgr(self.cap.get_frame(timeout=1.0))
+            self._errors = 0
+            return frame is not None, frame
+        except self._uvc.StreamError as e:
+            self._errors += 1
+            if self._errors >= 5:
+                raise engine.EngineError(f"the colour stream stopped: {e}") from None
+            return False, None
+
+    def release(self):
+        self.cap.close()
+
+
+def open_infrared(ir_device=None):
+    """The infrared stream through macOS, if it is still offered while pyuvc holds the camera; else None."""
+    from camera_utils import CameraNotFoundError, backend_id, describe, find_camera, open_camera
+    from phone_detect import IR_SIZES, IR_WARMUP_FRAMES, Stream
+
+    try:
+        if ir_device is None:
+            print("Looking for the near-infrared (CPD) camera ...")
+            ir_device, backend_name = find_camera("ir")
+            backend = backend_id(backend_name)
+        else:
+            backend = None
+        cap, info = open_camera(ir_device, backend, *IR_SIZES["512x640"], "MJPG", 30)
+    except (CameraNotFoundError, Exception) as e:  # noqa: BLE001 - any failure means "no infrared"
+        print(f"NOTE: no infrared stream on this Mac while the colour one is open ({e}); "
+              "the infrared signals are off.")
+        return None
+    ir = Stream("ir", cap, describe(info), IR_WARMUP_FRAMES)
+    print(f"Opened infrared: {ir.description}")
+    return ir
+
+
+class MacEngine(engine.Engine):
+    def __init__(self, device=None, ir_device=None, phone_score=0.35, with_ir=True):
+        # `device` is ignored: the colour stream is found on USB, not by camera index.
+        self.cap = ColourUSB()
+        print(f"Opened {self.cap.description}")
+        self.ir = open_infrared(ir_device) if with_ir else None
+        try:
+            self.feed = LocalFaceFeed()
+        except Exception:
+            self.cap.release()
+            if self.ir:
+                self.ir.close()
+            raise
+        self.client = None
+        self.det = self.feed.det
+        self.worker = start_phone_worker(phone_score, self.ir is not None)
+        self.phone_score = phone_score
+        # the camera's AI is not running (the mesh runs on this Mac), so its overheating warning never applies
+        self.started = math.inf
+        self._ir_frame = None
+
+    def step(self):
+        ok, frame = self.cap.read()
+        if not ok or frame is None:
+            return None
+        now = time.time()
+        self.worker.submit(frame.copy())
+        if self.ir is not None:
+            fresh = self.ir.take()
+            if fresh is not None:
+                self._ir_frame = fresh
+                self.worker.submit(fresh, "ir")
+        self.feed.poll(now, frame)
+        return engine.Step(now, frame, self._ir_frame, signals(self.det, self.worker, now), self.raw(now))
+
+    def raw(self, now):
+        if self.ir is not None:
+            return super().raw(now)
+        det, feed, worker = self.det, self.feed, self.worker
+        mesh = feed.features if feed.features is not None else (None, None, None)
+        base = det.base if det.base is not None else (None, None, None)
+        return {
+            "color_phone_seen": int(worker.is_on(now, "rgb")), "phone_seen": None, "phone_held": None,
+            "face_seen": int(not feed.face_lost(now)), "head": det.head, "eyes": det.eyes,
+            "pitch_deg": mesh[0], "lid": mesh[1], "eye_opening": mesh[2],
+            "pitch_base": base[0], "lid_base": base[1], "eye_opening_base": base[2],
+            "color_phone_now": worker.latest["rgb"], "phone_now": None,
+            "hands": None, "hand_distance": None,
+        }
+
+    def close(self):
+        self.cap.release()
+        if self.ir is not None:
+            self.ir.close()
+        self.worker.stop()
+        self.feed.mesh.close()

@@ -230,3 +230,10 @@ models/object_detection_yolox_2022nov.onnx
 
 # MediaPipe hand model (hand_detect.py downloads it on first use)
 models/hand_landmarker.task
+
+# MediaPipe face mesh (mac/engine_mac.py downloads it on first use) and the Mac probe frame
+models/face_landmarker.task
+mac/probe_colour.jpg
+
+# camera login kept locally; never commit it
+logiwebcam.secrets
