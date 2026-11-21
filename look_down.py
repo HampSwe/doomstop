@@ -1,6 +1,10 @@
-"""Shows when your face and your gaze point down, using the LogiInsight face mesh.
+"""Live view of the three doomscroll signals: FACE down, GAZE down and PHONE seen.
 
-These are read from the camera's 478 face landmarks:
+PHONE comes from an object detector running on this PC on the video picture
+(see phone_detect.py). It runs in the background, since one pass takes about
+90 ms, and counts as seen for a second after each sighting.
+
+FACE and GAZE come from the LogiInsight camera's 478 face landmarks:
 
   pitch   head tilt from the landmarks' depth: chin further away than the forehead
   lid     how far the upper eyelid sits below the eye corners (it follows the eye down)
@@ -31,6 +35,7 @@ The design comes from recordings of one person in four poses (captures/, keys
 
     python look_down.py               # finds the LogiInsight colour camera
     python look_down.py --device 1    # or name the camera index
+    python look_down.py --no-phone    # FACE and GAZE only
 
 Keys in the window:
     c  re-measure the "looking at the screen" pose
@@ -48,6 +53,7 @@ import argparse
 import json
 import math
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -57,6 +63,7 @@ import numpy as np
 from face_stream import connect_device_ai, pick_camera  # also puts the SDK on sys.path
 from camera_utils import CameraNotFoundError, describe, open_camera
 from logiwebcam import AiStalenessMonitor
+from phone_detect import PhoneDetector
 
 # MediaPipe face-mesh indexes (the camera's mesh uses the same layout).
 FOREHEAD, CHIN = 10, 152
@@ -77,6 +84,7 @@ SMOOTH_S = 0.25          # smoothing time constant
 CALIB_SAMPLES = 20       # mesh results per calibration (under a second)
 FACE_LOST_S = 1.0        # no face for this long counts as "no face"
 AI_WARN_S = 8 * 60       # the camera can overheat after about 10 minutes of AI
+PHONE_HOLD_S = 1.0       # PHONE stays on this long after the last sighting (detection flickers)
 
 RECORD_SAMPLES = 30      # mesh results per recorded pose (about a second)
 RECORD_POSES = {ord("1"): ("screen", "LOOK AT THE SCREEN"),
@@ -259,10 +267,68 @@ def draw_face(frame, face, show_mesh):
         cv2.circle(frame, (int(landmarks[i][0]), int(landmarks[i][1])), 3, CYAN, -1)
 
 
-def draw_meter(frame, x, label, value, threshold, active):
+class PhoneWorker(threading.Thread):
+    """Runs the phone detector on the newest frame in the background."""
+
+    def __init__(self, detector):
+        super().__init__(daemon=True, name="phone")
+        self.detector = detector
+        self.phones = []            # latest result: [(x, y, w, h, score)] in frame pixels
+        self.last_seen = -1e9       # time of the last frame that showed a phone
+        self._frame = None
+        self._wake = threading.Event()
+        self._quit = False
+        self._warned = False
+
+    def submit(self, frame):
+        """Hand over a frame the caller will not draw on; an unprocessed older one is dropped."""
+        self._frame = frame
+        self._wake.set()
+
+    def is_on(self, now):
+        return now - self.last_seen <= PHONE_HOLD_S
+
+    def run(self):
+        while True:
+            self._wake.wait()
+            self._wake.clear()
+            if self._quit:
+                return
+            frame, self._frame = self._frame, None
+            if frame is None:
+                continue
+            try:
+                self.phones = self.detector.detect(frame)
+            except Exception as e:  # keep the face signals running if the detector breaks
+                self.phones = []
+                if not self._warned:
+                    self._warned = True
+                    print(f"WARNING: phone detection failed and is off: {e}")
+            if self.phones:
+                self.last_seen = time.time()
+
+    def stop(self):
+        self._quit = True
+        self._wake.set()
+
+
+def draw_phones(frame, phones):
+    """Drawn before mirroring, like the face."""
+    for x, y, w, h, score in phones:
+        cv2.rectangle(frame, (int(x), int(y)), (int(x + w), int(y + h)), RED, 3)
+
+
+def draw_tile(frame, x0, x1, y0, y1, text, active, scale):
+    """One signal lamp: filled red when on, a grey outline when off."""
+    cv2.rectangle(frame, (x0, y0), (x1, y1), RED if active else GREY, -1 if active else 2)
+    (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 4)
+    cv2.putText(frame, text, ((x0 + x1 - tw) // 2, (y0 + y1 + th) // 2), cv2.FONT_HERSHEY_SIMPLEX,
+                scale, WHITE if active else GREY, 4, cv2.LINE_AA)
+
+
+def draw_meter(frame, x, label, value, threshold, active, bottom):
     """Vertical bar: fill = value, white line = threshold (at half height)."""
-    h = frame.shape[0]
-    top, bottom, width = 30, h - 70, 24
+    top, width = 30, 24
     span = bottom - top
     fill = int(span * min(max(value, 0.0) / (2 * threshold), 1.0))
     cv2.rectangle(frame, (x, top), (x + width, bottom), GREY, 1)
@@ -273,9 +339,24 @@ def draw_meter(frame, x, label, value, threshold, active):
     put(frame, label, (x + (width - tw) // 2, bottom + 24), 0.5, RED if active else WHITE, 1)
 
 
-def draw_hud(frame, det, state, ai_seconds, recorder=None):
+def draw_hud(frame, det, state, ai_seconds, recorder=None, phone=None):
+    """`phone` is None when the phone detector is off, else (on, best score or None, needed score)."""
     h, w = frame.shape[:2]
     big = w / 1280                       # the large texts scale with the picture
+    tiles = [("FACE DOWN", det.face_down), ("GAZE DOWN", det.gaze_down)]
+    if phone is not None:
+        tiles.append(("PHONE", phone[0]))
+    any_on = any(on for _, on in tiles)
+    if any_on:
+        cv2.rectangle(frame, (0, 0), (w - 1, h - 1), RED, 24)
+    tile_bottom = h - 62
+    tile_top = tile_bottom - int(110 * big)
+    gap = 16
+    tile_w = (w - 56 - gap * (len(tiles) - 1)) // len(tiles)
+    for i, (text, on) in enumerate(tiles):
+        x0 = 28 + i * (tile_w + gap)
+        draw_tile(frame, x0, x0 + tile_w, tile_top, tile_bottom, text, on, 1.9 * big)
+
     if recorder is not None and recorder.label:
         put_centred(frame, recorder.prompt, h // 2, 1.4 * big, CYAN, 3)
         put_centred(frame, f"recording {int(recorder.progress * 100)} %: hold the pose",
@@ -284,11 +365,6 @@ def draw_hud(frame, det, state, ai_seconds, recorder=None):
         target = "LOOK AT THE SCREEN" if det.calibrating == "screen" else "LOOK DOWN (at your phone)"
         put_centred(frame, target, h // 2, 1.4 * big, YELLOW, 3)
         put_centred(frame, f"measuring {int(det.progress * 100)} %", h // 2 + int(45 * big), 0.8 * big, YELLOW, 2)
-    elif state == "down":
-        what = " + ".join(n for n, on in (("FACE", det.face_down), ("GAZE", det.gaze_down)) if on)
-        cv2.rectangle(frame, (0, 0), (w - 1, h - 1), RED, 24)
-        put_centred(frame, what, h // 2 - int(100 * big), 3.0 * big, RED, 8, backing=False)
-        put_centred(frame, "DOWN", h // 2 + int(110 * big), 7.0 * big, RED, 18, backing=False)
     elif state == "no face":
         put_centred(frame, "NO FACE", h // 2, 2.0 * big, GREY, 4)
 
@@ -297,9 +373,13 @@ def draw_hud(frame, det, state, ai_seconds, recorder=None):
                  f"gaze: {'DOWN' if det.gaze_down else 'on the screen'}")
     else:
         label = {"no face": "no face", "wait": "waiting for the face mesh"}[state]
-    put(frame, label, (28, 48), 0.8, RED if state == "down" else GREEN)
-    put(frame, f"head {det.head:+.2f} / {det.face_threshold:.2f}   "
-               f"eyes {det.eyes:+.2f} / {det.gaze_threshold:.2f}", (28, 80))
+    numbers = (f"head {det.head:+.2f} / {det.face_threshold:.2f}   "
+               f"eyes {det.eyes:+.2f} / {det.gaze_threshold:.2f}")
+    if phone is not None:
+        label += f"   phone: {'SEEN' if phone[0] else 'no'}"
+        numbers += f"   phone {'-' if phone[1] is None else format(phone[1], '.2f')} / {phone[2]:.2f}"
+    put(frame, label, (28, 48), 0.8, RED if any_on else GREEN)
+    put(frame, numbers, (28, 80))
     if det.message:
         put(frame, det.message, (28, 110), 0.6, YELLOW)
     if ai_seconds > AI_WARN_S:
@@ -307,8 +387,8 @@ def draw_hud(frame, det, state, ai_seconds, recorder=None):
             (28, 140), 0.6, YELLOW)
     put(frame, "c: screen pose   d: down pose   r: reset   m: mesh   1-4: record poses   q: quit", (28, h - 30), 0.55, WHITE, 1)
 
-    draw_meter(frame, w - 120, "FACE", det.head, det.face_threshold, det.face_down)
-    draw_meter(frame, w - 60, "GAZE", det.eyes, det.gaze_threshold, det.gaze_down)
+    draw_meter(frame, w - 120, "FACE", det.head, det.face_threshold, det.face_down, tile_top - 50)
+    draw_meter(frame, w - 60, "GAZE", det.eyes, det.gaze_threshold, det.gaze_down, tile_top - 50)
 
 
 def main():
@@ -317,6 +397,9 @@ def main():
     p.add_argument("--width", type=int, default=1280)
     p.add_argument("--height", type=int, default=720)
     p.add_argument("--no-mirror", action="store_true", help="do not mirror the picture")
+    p.add_argument("--no-phone", action="store_true", help="skip the phone detector (FACE and GAZE only)")
+    p.add_argument("--phone-score", type=float, default=0.35,
+                   help="confidence the phone detector needs (default 0.35; lower finds more, with more false alarms)")
     p.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run until quit)")
     p.add_argument("--no-display", action="store_true", help="no window; print a summary")
     args = p.parse_args()
@@ -337,10 +420,14 @@ def main():
     det = LookDownDetector()
     recorder = PoseRecorder()
     monitor = AiStalenessMonitor()
+    phone_worker = None
+    if not args.no_phone:
+        phone_worker = PhoneWorker(PhoneDetector(min_score=args.phone_score))
+        phone_worker.start()
     show_mesh = False
     face, last_ts, last_face_t = None, None, time.time()
     started = time.time()
-    n_frames = n_mesh = n_face_down = n_gaze_down = 0
+    n_frames = n_mesh = n_face_down = n_gaze_down = n_phone = 0
     try:
         while not args.frames or n_frames < args.frames:
             ok, frame = cap.read()
@@ -350,6 +437,8 @@ def main():
                 continue
             now = time.time()
             n_frames += 1
+            if phone_worker:
+                phone_worker.submit(frame.copy())     # a copy: this frame gets drawn on below
 
             data = client.get_latest_ai_data()
             if monitor.update(data):
@@ -381,13 +470,20 @@ def main():
                 state = "screen"
             n_face_down += det.face_down
             n_gaze_down += det.gaze_down
+            phone = None
+            if phone_worker:
+                phones = phone_worker.phones
+                phone = (phone_worker.is_on(now), phones[0][4] if phones else None, args.phone_score)
+                n_phone += phone[0]
 
             if args.no_display:
                 continue
             draw_face(frame, None if face_lost else face, show_mesh)
+            if phone_worker:
+                draw_phones(frame, phones)
             if not args.no_mirror:
                 frame = cv2.flip(frame, 1)
-            draw_hud(frame, det, state, now - started, recorder)
+            draw_hud(frame, det, state, now - started, recorder, phone)
             cv2.imshow(WINDOW, frame)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
@@ -408,8 +504,11 @@ def main():
         cap.release()
         cv2.destroyAllWindows()
         client.disconnect()
-    print(f"{n_frames} frames, {n_mesh} mesh results, "
-          f"face down in {n_face_down} frames, gaze down in {n_gaze_down} frames")
+        if phone_worker:
+            phone_worker.stop()
+    print(f"{n_frames} frames, {n_mesh} mesh results, face down in {n_face_down} frames, "
+          f"gaze down in {n_gaze_down} frames"
+          + (f", phone seen in {n_phone} frames" if phone_worker else ""))
 
 
 if __name__ == "__main__":

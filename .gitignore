@@ -224,3 +224,6 @@ __marimo__/
 
 # Recorded face landmarks (look_down.py)
 captures/
+
+# Object detector for phone_detect.py (34 MB, downloaded on first use)
+models/object_detection_yolox_2022nov.onnx
