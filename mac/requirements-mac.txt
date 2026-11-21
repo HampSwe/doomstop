@@ -1,0 +1,2 @@
+# macOS only (mac/README.md): reads the colour stream over USB
+pupil-labs-uvc
