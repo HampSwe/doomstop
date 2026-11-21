@@ -1,0 +1,402 @@
+{
+ "duration": 35.14,
+ "segments": [
+  {
+   "start": 2.66,
+   "end": 8.1,
+   "text": "The night before my biggest exam I skipped sleep. The next morning my mind",
+   "words": [
+    {
+     "start": 2.66,
+     "end": 3.3,
+     "word": "The"
+    },
+    {
+     "start": 3.3,
+     "end": 3.52,
+     "word": "night"
+    },
+    {
+     "start": 3.52,
+     "end": 3.92,
+     "word": "before"
+    },
+    {
+     "start": 3.92,
+     "end": 4.16,
+     "word": "my"
+    },
+    {
+     "start": 4.16,
+     "end": 4.48,
+     "word": "biggest"
+    },
+    {
+     "start": 4.48,
+     "end": 4.96,
+     "word": "exam"
+    },
+    {
+     "start": 4.96,
+     "end": 5.48,
+     "word": "I"
+    },
+    {
+     "start": 5.48,
+     "end": 5.78,
+     "word": "skipped"
+    },
+    {
+     "start": 5.78,
+     "end": 6.22,
+     "word": "sleep."
+    },
+    {
+     "start": 6.74,
+     "end": 6.96,
+     "word": "The"
+    },
+    {
+     "start": 6.96,
+     "end": 7.2,
+     "word": "next"
+    },
+    {
+     "start": 7.2,
+     "end": 7.56,
+     "word": "morning"
+    },
+    {
+     "start": 7.56,
+     "end": 7.8,
+     "word": "my"
+    },
+    {
+     "start": 7.8,
+     "end": 8.1,
+     "word": "mind"
+    }
+   ]
+  },
+  {
+   "start": 8.1,
+   "end": 14.54,
+   "text": "was completely blank. Sleep has four stages. Stage 2 makes up about 50% of the",
+   "words": [
+    {
+     "start": 8.1,
+     "end": 8.32,
+     "word": "was"
+    },
+    {
+     "start": 8.32,
+     "end": 8.78,
+     "word": "completely"
+    },
+    {
+     "start": 8.78,
+     "end": 9.34,
+     "word": "blank."
+    },
+    {
+     "start": 10.14,
+     "end": 10.22,
+     "word": "Sleep"
+    },
+    {
+     "start": 10.22,
+     "end": 10.44,
+     "word": "has"
+    },
+    {
+     "start": 10.44,
+     "end": 10.7,
+     "word": "four"
+    },
+    {
+     "start": 10.7,
+     "end": 11.24,
+     "word": "stages."
+    },
+    {
+     "start": 12.26,
+     "end": 12.28,
+     "word": "Stage"
+    },
+    {
+     "start": 12.28,
+     "end": 12.6,
+     "word": "2"
+    },
+    {
+     "start": 12.6,
+     "end": 12.86,
+     "word": "makes"
+    },
+    {
+     "start": 12.86,
+     "end": 13.14,
+     "word": "up"
+    },
+    {
+     "start": 13.14,
+     "end": 13.44,
+     "word": "about"
+    },
+    {
+     "start": 13.44,
+     "end": 13.84,
+     "word": "50"
+    },
+    {
+     "start": 13.84,
+     "end": 14.18,
+     "word": "%"
+    },
+    {
+     "start": 14.18,
+     "end": 14.4,
+     "word": "of"
+    },
+    {
+     "start": 14.4,
+     "end": 14.54,
+     "word": "the"
+    }
+   ]
+  },
+  {
+   "start": 14.54,
+   "end": 20.22,
+   "text": "night and a full cycle has roughly 90 minutes. But here's the surprise. People",
+   "words": [
+    {
+     "start": 14.54,
+     "end": 14.86,
+     "word": "night"
+    },
+    {
+     "start": 14.86,
+     "end": 15.46,
+     "word": "and"
+    },
+    {
+     "start": 15.46,
+     "end": 15.58,
+     "word": "a"
+    },
+    {
+     "start": 15.58,
+     "end": 15.74,
+     "word": "full"
+    },
+    {
+     "start": 15.74,
+     "end": 16.14,
+     "word": "cycle"
+    },
+    {
+     "start": 16.14,
+     "end": 16.42,
+     "word": "has"
+    },
+    {
+     "start": 16.42,
+     "end": 16.98,
+     "word": "roughly"
+    },
+    {
+     "start": 16.98,
+     "end": 17.34,
+     "word": "90"
+    },
+    {
+     "start": 17.34,
+     "end": 17.72,
+     "word": "minutes."
+    },
+    {
+     "start": 18.4,
+     "end": 18.6,
+     "word": "But"
+    },
+    {
+     "start": 18.6,
+     "end": 18.82,
+     "word": "here's"
+    },
+    {
+     "start": 18.82,
+     "end": 18.96,
+     "word": "the"
+    },
+    {
+     "start": 18.96,
+     "end": 19.36,
+     "word": "surprise."
+    },
+    {
+     "start": 19.94,
+     "end": 20.22,
+     "word": "People"
+    }
+   ]
+  },
+  {
+   "start": 20.22,
+   "end": 24.56,
+   "text": "who sleep after practicing piano wake up playing better without any extra",
+   "words": [
+    {
+     "start": 20.22,
+     "end": 20.38,
+     "word": "who"
+    },
+    {
+     "start": 20.38,
+     "end": 20.68,
+     "word": "sleep"
+    },
+    {
+     "start": 20.68,
+     "end": 21.0,
+     "word": "after"
+    },
+    {
+     "start": 21.0,
+     "end": 21.5,
+     "word": "practicing"
+    },
+    {
+     "start": 21.5,
+     "end": 21.96,
+     "word": "piano"
+    },
+    {
+     "start": 21.96,
+     "end": 22.28,
+     "word": "wake"
+    },
+    {
+     "start": 22.28,
+     "end": 22.48,
+     "word": "up"
+    },
+    {
+     "start": 22.48,
+     "end": 22.72,
+     "word": "playing"
+    },
+    {
+     "start": 22.72,
+     "end": 23.2,
+     "word": "better"
+    },
+    {
+     "start": 23.2,
+     "end": 23.9,
+     "word": "without"
+    },
+    {
+     "start": 23.9,
+     "end": 24.24,
+     "word": "any"
+    },
+    {
+     "start": 24.24,
+     "end": 24.56,
+     "word": "extra"
+    }
+   ]
+  },
+  {
+   "start": 24.56,
+   "end": 29.92,
+   "text": "practice. The slides will be uploaded by Friday and next week's room is building",
+   "words": [
+    {
+     "start": 24.56,
+     "end": 25.0,
+     "word": "practice."
+    },
+    {
+     "start": 25.94,
+     "end": 26.24,
+     "word": "The"
+    },
+    {
+     "start": 26.24,
+     "end": 26.54,
+     "word": "slides"
+    },
+    {
+     "start": 26.54,
+     "end": 26.86,
+     "word": "will"
+    },
+    {
+     "start": 26.86,
+     "end": 26.96,
+     "word": "be"
+    },
+    {
+     "start": 26.96,
+     "end": 27.34,
+     "word": "uploaded"
+    },
+    {
+     "start": 27.34,
+     "end": 27.64,
+     "word": "by"
+    },
+    {
+     "start": 27.64,
+     "end": 28.0,
+     "word": "Friday"
+    },
+    {
+     "start": 28.0,
+     "end": 28.62,
+     "word": "and"
+    },
+    {
+     "start": 28.62,
+     "end": 28.86,
+     "word": "next"
+    },
+    {
+     "start": 28.86,
+     "end": 29.22,
+     "word": "week's"
+    },
+    {
+     "start": 29.22,
+     "end": 29.44,
+     "word": "room"
+    },
+    {
+     "start": 29.44,
+     "end": 29.62,
+     "word": "is"
+    },
+    {
+     "start": 29.62,
+     "end": 29.92,
+     "word": "building"
+    }
+   ]
+  },
+  {
+   "start": 29.92,
+   "end": 30.3,
+   "text": "C.",
+   "words": [
+    {
+     "start": 29.92,
+     "end": 30.3,
+     "word": "C."
+    }
+   ]
+  }
+ ]
+}
