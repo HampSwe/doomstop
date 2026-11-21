@@ -13,9 +13,13 @@ MacEngine has the same interface as engine.Engine (det, feed, worker,
 started, step(), raw(), face(), close()), so dashboard.py and collect.py run
 unchanged through mac/run_mac.py. On Windows and Linux, use engine.Engine.
 
-The infrared stream is used if macOS still offers it while pyuvc holds the
-camera; otherwise the infrared signals (phone, phone_in_hand,
-gaze_down_x_phone) are off (None) and the panel says "waiting for infrared".
+Colour OR infrared, never both, on a Mac (tested 2026-11-21 with
+mac/diag_ir_first.py): taking the colour stream over USB takes the whole
+device away from macOS, so infrared delivers no frames afterwards; and with
+infrared open first, the colour stream over USB times out. So this engine runs
+colour only: the infrared signals (phone, phone_in_hand, gaze_down_x_phone)
+are off (None) and the panel says "waiting for infrared". Both streams
+together need Windows or Linux. (open_infrared() is kept for with_ir=True.)
 """
 
 import math
@@ -147,10 +151,11 @@ class ColourUSB:
             frame = to_bgr(self.cap.get_frame(timeout=1.0))
             self._errors = 0
             return frame is not None, frame
-        except self._uvc.StreamError as e:
+        except (self._uvc.StreamError, TimeoutError) as e:   # get_frame raises TimeoutError on a stall
             self._errors += 1
             if self._errors >= 5:
-                raise engine.EngineError(f"the colour stream stopped: {e}") from None
+                raise engine.EngineError(f"the colour stream stopped (no frame for 5 s{': ' + str(e) if str(e) else ''}). "
+                                         "Unplug and replug the camera, wait about 20 s, and start again.") from None
             return False, None
 
     def release(self):
@@ -226,10 +231,13 @@ def open_infrared(ir_device=None):
 
 
 class MacEngine(engine.Engine):
-    def __init__(self, device=None, ir_device=None, phone_score=0.35, with_ir=True):
+    def __init__(self, device=None, ir_device=None, phone_score=0.35, with_ir=False):
         # `device` is ignored: the colour stream is found on USB, not by camera index.
         self.cap = ColourUSB()
         print(f"Opened {self.cap.description}")
+        if not with_ir:
+            print("NOTE: on a Mac the infrared stream can't run next to the colour one (see mac/README.md); "
+                  "the infrared signals are off.")
         self.ir = open_infrared(ir_device) if with_ir else None
         try:
             self.feed = LocalFaceFeed()

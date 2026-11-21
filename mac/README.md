@@ -63,8 +63,28 @@ sudo .venv/bin/python mac/probe_colour.py
 |---|---|---|
 | colour stream | `cv2.VideoCapture` | `pyuvc` over USB, needs `sudo` |
 | face mesh | the camera's own AI over SSH | MediaPipe on the Mac (no login needed) |
-| infrared stream + its signals (`phone`, `phone_in_hand`, `gaze_down_x_phone`) | yes | only if macOS still offers it while `pyuvc` runs; otherwise off (`None`) and the panel says "waiting for infrared" |
+| infrared stream + its signals (`phone`, `phone_in_hand`, `gaze_down_x_phone`) | yes | **no**: off (`None`), and the panel says "waiting for infrared" (see below) |
 | overheating warning | after 8 min of camera AI | off (the camera's AI isn't running) |
+
+### Colour OR infrared on a Mac, never both
+
+Tested on 2026-11-21 with `mac/diag_ir_first.py`:
+
+- **Colour first, then infrared** (what `run_mac.py` does): taking the colour
+  stream over USB takes the whole camera away from macOS. macOS still *lists*
+  `LVNext CPD Camera`, but it delivers no frames.
+- **Infrared first, then colour:** infrared works on its own (30 fps), but the
+  colour stream over USB then times out.
+
+Getting both on a Mac would mean writing our own USB video driver for the
+camera's two isochronous streams, which isn't worth it for a demo. So:
+
+- **Both streams together:** use a Windows or Linux laptop
+  (`dashboard.py` / `collect.py` directly, no `mac/`).
+- **Mac, colour:** `sudo .venv/bin/python mac/run_mac.py dashboard`, for
+  look-down (FACE/GAZE) and colour phone detection.
+- **Mac, infrared only:** the normal scripts without sudo, e.g.
+  `.venv/bin/python phone_detect.py --source ir`.
 
 **Known caveats:**
 - **Untested thresholds.** The look-down thresholds were tuned on the
