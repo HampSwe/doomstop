@@ -368,10 +368,11 @@ def signals(det, worker, now):
       color_phone                   phone confidence in the colour stream
       phone                         phone confidence in the infrared stream
       phone_in_hand                 how steadily a hand has been at that phone
-      gaze_down_x_phone             gaze_down * phone: the infrared phone confidence while looking down, else 0
+      gaze_down_x_phone_in_hand     gaze_down * phone_in_hand: the phone-in-hand score while looking down, else 0
     """
     ir = worker is not None and "ir" in worker.phones
     phone = worker.score(now, "ir") if ir else None
+    in_hand = worker.use.in_hand if ir and worker.use else None
     return {
         "face_down": int(det.face_down),
         "face_down_score": det.face_score,
@@ -379,8 +380,8 @@ def signals(det, worker, now):
         "gaze_down_score": det.gaze_score,
         "color_phone": worker.score(now, "rgb") if worker else None,
         "phone": phone,
-        "phone_in_hand": worker.use.in_hand if ir and worker.use else None,
-        "gaze_down_x_phone": int(det.gaze_down) * phone if ir else None,
+        "phone_in_hand": in_hand,
+        "gaze_down_x_phone_in_hand": int(det.gaze_down) * in_hand if in_hand is not None else None,
     }
 
 

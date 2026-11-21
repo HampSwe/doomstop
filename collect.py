@@ -62,7 +62,7 @@ SPACE = 32
 COUNTDOWN_S = 3.0     # "start now" time before a recording begins
 
 SIGNAL_COLUMNS = ("face_down", "face_down_score", "gaze_down", "gaze_down_score", "color_phone", "phone",
-                  "phone_in_hand", "gaze_down_x_phone")
+                  "phone_in_hand", "gaze_down_x_phone_in_hand")
 COLUMNS = ("person", "scenario", "t", "phase", "action", "distracted") + SIGNAL_COLUMNS + RAW
 
 Phase = namedtuple("Phase", "seconds action distracted")

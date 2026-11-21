@@ -9,6 +9,7 @@ model has been fitted the row says so.
     python dashboard.py --device 1    # or name the colour camera index
     python dashboard.py --face        # also show face_down and face_down_score
     python dashboard.py --binary-gaze # also show gaze_down (0 or 1)
+    python dashboard.py --model models/attention_model_face_down.json   # another fitted model
 
 Signals (scores are 0..1; the white tick on a bar is where it counts as "on"):
 
@@ -17,12 +18,12 @@ Signals (scores are 0..1; the white tick on a bar is where it counts as "on"):
     color_phone          phone detector confidence                  colour stream
     phone                phone detector confidence                  infrared stream
     phone_in_hand        how steadily a hand has been at that phone infrared stream
-    gaze_down_x_phone    gaze_down * phone: the infrared phone confidence while looking down, else 0
+    gaze_down_x_phone_in_hand   gaze_down * phone_in_hand: the phone-in-hand score while looking down, else 0
 
 Left out of the list for now, but still computed (HIDDEN below): the yes/no
 gaze_down, which --binary-gaze brings back, and face_down / face_down_score
-(head tilt), which --face brings back. gaze_down_x_phone keeps using gaze_down
-either way.
+(head tilt), which --face brings back. gaze_down_x_phone_in_hand keeps using
+gaze_down either way.
 
 Needs the LogiInsight camera and its login (LOGIWEBCAM_USER / LOGIWEBCAM_PASSWORD),
 like look_down.py, which this builds on. Look at the screen for the first
@@ -37,11 +38,12 @@ Keys: c  re-measure the "looking at the screen" pose
 import argparse
 import sys
 import time
+from pathlib import Path
 
 import cv2
 import numpy as np
 
-from attention import History, Model
+from attention import MODEL_PATH, History, Model
 from engine import Engine, EngineError
 from hand_detect import IN_HAND_ON, draw_hands
 from look_down import AI_WARN_S, GREEN, GREY, RED, WHITE, YELLOW, draw_face, draw_phones, put, put_centred
@@ -96,8 +98,8 @@ def draw_signal(canvas, x, y, name, value, threshold):
     """One signal: name, value, and a bar that is red at or above `threshold` (marked by a white tick)."""
     put(canvas, name, (x, y + 17), 0.6, WHITE, 1, backing=False)
     text = "-" if value is None else str(value) if isinstance(value, int) else f"{value:.2f}"
-    put(canvas, text, (x + 238, y + 17), 0.6, WHITE, 1, backing=False)
-    x0, x1 = x + 300, x + 630
+    put(canvas, text, (x + 268, y + 17), 0.6, WHITE, 1, backing=False)
+    x0, x1 = x + 325, x + 630
     cv2.rectangle(canvas, (x0, y), (x1, y + 22), (55, 55, 55), -1)
     if value is not None:
         cv2.rectangle(canvas, (x0, y), (x0 + int((x1 - x0) * value), y + 22),
@@ -111,7 +113,7 @@ def draw_signal(canvas, x, y, name, value, threshold):
 def draw_attention(canvas, y, attention):
     """The model's attention score as one wide bar: green when attentive, red below 0.5."""
     put(canvas, "ATTENTION", (PAD, y + 24), 0.8, WHITE, 2, backing=False)
-    x0, x1 = PAD + 300, WIDTH - PAD
+    x0, x1 = PAD + 325, WIDTH - PAD
     cv2.rectangle(canvas, (x0, y), (x1, y + 32), (55, 55, 55), -1)
     if attention is None:
         put(canvas, "no model yet: record people with collect.py, then run train.py", (x0 + 12, y + 22), 0.55,
@@ -148,6 +150,7 @@ def main():
     p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--face", action="store_true", help="also show face_down and face_down_score")
     p.add_argument("--binary-gaze", action="store_true", help="also show the yes/no gaze_down")
+    p.add_argument("--model", default=str(MODEL_PATH), help="the fitted attention model to show (default %(default)s)")
     p.add_argument("--phone-score", type=float, default=0.35,
                    help="confidence at which a phone counts as seen (default 0.35)")
     p.add_argument("--no-mirror", action="store_true", help="do not mirror the pictures")
@@ -161,12 +164,14 @@ def main():
     print("Look at the screen for a second while it measures your normal pose.")
 
     det = engine.det
-    model = Model.load()
-    history = History(model.windows) if model else History()
+    model = Model.load(args.model)
+    history = History(model.windows, model.signals) if model else History()
     if model is None:
-        print("No attention model yet: record people with collect.py, then run train.py.")
+        print(f"No attention model at {args.model}: record people with collect.py, then run train.py.")
+    else:
+        print(f"Attention model {Path(args.model).name}: {', '.join(model.signals)}")
     thresholds = {"face_down_score": 0.5, "gaze_down_score": 0.5, "color_phone": args.phone_score,
-                  "phone": args.phone_score, "phone_in_hand": IN_HAND_ON, "gaze_down_x_phone": args.phone_score}
+                  "phone": args.phone_score, "phone_in_hand": IN_HAND_ON, "gaze_down_x_phone_in_hand": IN_HAND_ON}
     hidden = {name for option, names in HIDDEN.items() if not getattr(args, option) for name in names}
     n_frames = 0
     message, message_t = "", 0.0
