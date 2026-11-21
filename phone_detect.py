@@ -9,10 +9,10 @@ The model file (34 MB) is downloaded into models/ on first use.
     python phone_detect.py --device 1      # skip the camera prompt
     python phone_detect.py --source ir     # the LogiInsight near-infrared stream instead
 
-Colour and infrared side by side, in two terminals (colour first, as YUY2):
+    python phone_detect.py --source both   # colour and infrared together, one window each
 
-    python phone_detect.py --device 1 --format YUY2
-    python phone_detect.py --source ir --device 2
+With both streams the colour one is opened as YUY2, not MJPG: MJPG on the
+colour side slows the infrared stream to about 1 frame per second.
 
     python phone_detect.py --all           # also draw every other object it recognises
     python phone_detect.py --image a.jpg   # run on a picture file instead of a camera
@@ -24,6 +24,7 @@ grey frames are stretched before detection (--ir-enhance). How well the model
 copes with real infrared pictures has to be measured on recordings:
 
     p / n in the window    save the next frames as "phone" / "no phone" examples
+                           (with --source both: the same moments from both streams)
     python phone_detect.py --eval captures/phone_ir    # score the saved examples
 
 From other code:
@@ -38,6 +39,7 @@ import argparse
 import math
 import os
 import sys
+import threading
 import time
 import urllib.request
 from pathlib import Path
@@ -228,35 +230,203 @@ def evaluate(folder, input_width):
           "\nfalse = share of no-phone frames where one was detected anyway.")
 
 
-def open_stream(args):
-    """Returns (capture, description, frames to skip)."""
+class Stream:
+    """One camera. A background reader keeps only the newest frame, so a slow
+    detector never falls behind the live picture and the camera is always read."""
+
+    def __init__(self, name, cap, description, skip=0):
+        self.name, self.cap, self.description = name, cap, description
+        self.window = f"phone_detect: {name} (q / Esc to quit)"
+        self.record_dir = CAPTURE_DIR / f"phone_{name}"
+        self.last_seen = -1e9          # time a phone was last found
+        self.last_frame_t = time.time()
+        self.n_frames = self.n_phone = 0
+        self.ms = 0.0
+        self.warned = False
+        self._skip, self._frame, self._fresh, self._quit = skip, None, False, False
+        self._thread = threading.Thread(target=self._read, daemon=True, name=f"read-{name}")
+        self._thread.start()
+
+    def _read(self):
+        while not self._quit:
+            ok, frame = self.cap.read()
+            if not ok or frame is None:
+                time.sleep(0.01)
+            elif self._skip:
+                self._skip -= 1
+            else:
+                self._frame, self._fresh = frame, True
+
+    def take(self):
+        """The newest frame, once; None if nothing new has arrived."""
+        if not self._fresh:
+            return None
+        self._fresh = False
+        self.last_frame_t = time.time()
+        return self._frame
+
+    def close(self):
+        self._quit = True
+        self._thread.join(timeout=2)
+        self.cap.release()
+
+
+def open_streams(args):
+    """The streams the --source option asks for, colour first."""
     from face_stream import pick_camera               # also puts the SDK on sys.path
-    from camera_utils import backend_id, describe, find_camera, open_camera
+    from camera_utils import (CameraNotFoundError, backend_id, describe, find_camera,
+                              list_cameras, open_camera)
+
+    def colour(index, fmt):
+        cap, info = open_camera(index, width=args.width, height=args.height, fourcc=fmt, fps=30)
+        return Stream("rgb", cap, describe(info))
+
+    def infrared(index, backend=None):
+        cap, info = open_camera(index, backend, *IR_SIZES[args.size], "MJPG", 30)
+        return Stream("ir", cap, describe(info), IR_WARMUP_FRAMES)
+
+    if args.source == "rgb":
+        return [colour(args.device if args.device is not None else pick_camera(), args.format)]
+    ir_index = args.ir_device if args.ir_device is not None else (args.device if args.source == "ir" else None)
     if args.source == "ir":
-        width, height = IR_SIZES[args.size]
-        if args.device is not None:
-            index, backend = args.device, None
-        else:
-            print("Looking for the near-infrared (CPD) camera ...")
-            index, backend_name = find_camera("ir")
-            backend = backend_id(backend_name)
-        cap, info = open_camera(index, backend, width, height, "MJPG", 30)
-        return cap, describe(info), IR_WARMUP_FRAMES
-    index = args.device if args.device is not None else pick_camera()
-    cap, info = open_camera(index, width=args.width, height=args.height, fourcc=args.format, fps=30)
-    return cap, describe(info), 0
+        if ir_index is not None:
+            return [infrared(ir_index)]
+        print("Looking for the near-infrared (CPD) camera ...")
+        index, backend_name = find_camera("ir")
+        return [infrared(index, backend_id(backend_name))]
+
+    # both: look at what is connected before anything is open
+    print("Scanning for cameras ...")
+    cams = list_cameras()
+    for c in cams:
+        c["ir"] = c["gray"] or c["height"] > c["width"]
+        print(f"  [{c['index']}] {c['width']}x{c['height']}  ({'infrared' if c['ir'] else 'colour'})")
+    if ir_index is None:
+        ir_index = next((c["index"] for c in cams if c["ir"]), None)
+        if ir_index is None:
+            raise CameraNotFoundError("No near-infrared (CPD) camera found. Is the LogiInsight plugged in?")
+    rgb_index = args.device
+    if rgb_index is None:
+        choices = [c["index"] for c in cams if not c["ir"]]
+        if not choices:
+            raise CameraNotFoundError("No colour camera found.")
+        rgb_index = choices[0]
+        if len(choices) > 1:
+            nearest = min(choices, key=lambda i: abs(i - ir_index))   # the camera's streams sit together
+            try:
+                answer = input(f"Colour camera index {choices} [{nearest}]: ").strip()
+            except EOFError:
+                answer = ""
+            rgb_index = int(answer) if answer.isdigit() and int(answer) in choices else nearest
+    fmt = args.format
+    if fmt == "MJPG":
+        fmt = "YUY2"
+        print("Opening the colour stream as YUY2 (MJPG would slow the infrared stream to about 1 fps).")
+    first = colour(rgb_index, fmt)                    # colour first, as the API reference advises
+    time.sleep(0.5)
+    try:
+        return [first, infrared(ir_index)]
+    except CameraNotFoundError:
+        first.close()
+        raise
+
+
+def show(stream, frame, found, phones, args, now, recording, record_left, message):
+    view = enhance_grey(frame, args.ir_enhance) if is_grey(frame) else frame   # what the model saw
+    if view is frame:
+        view = frame.copy()
+    draw(view, found, args.all)
+    if view.shape[0] < 700:                           # the infrared sizes are small on screen
+        k = 800 / view.shape[0]
+        view = cv2.resize(view, None, fx=k, fy=k, interpolation=cv2.INTER_LINEAR)
+    h, w = view.shape[:2]
+    big = w / 1280
+    if recording:
+        label(view, f"recording '{recording}': {record_left} left", (20, h // 2), 0.8, CYAN)
+    elif now - stream.last_seen <= args.hold:
+        cv2.rectangle(view, (0, 0), (w - 1, h - 1), RED, 24)
+        (tw, _), _ = cv2.getTextSize("PHONE", cv2.FONT_HERSHEY_SIMPLEX, 5.0 * big, 14)
+        cv2.putText(view, "PHONE", ((w - tw) // 2, h - 80), cv2.FONT_HERSHEY_SIMPLEX, 5.0 * big, RED, 14)
+    best = f"{phones[0][4]:.2f}" if phones else "-"
+    label(view, f"{stream.name}: phone score {best} (needs {args.min_score:.2f})   {stream.ms:.0f} ms",
+          (28, 48), 0.65, WHITE)
+    label(view, message or "p: record phone   n: record no phone   q: quit", (28, h - 30), 0.5, WHITE, 1)
+    cv2.imshow(stream.window, view)
+
+
+def run(streams, detector, args):
+    """Detect on each stream's newest frame in turn until quit. Returns False if a stream died."""
+    recording, record_left, message = None, 0, ""
+    alive = True
+    try:
+        while not args.frames or min(s.n_frames for s in streams) < args.frames:
+            saved_any = False
+            for s in streams:
+                frame = s.take()
+                now = time.time()
+                if frame is None:
+                    if now - s.last_frame_t > 5 and not s.warned:
+                        s.warned = True
+                        print(f"WARNING: no frames from the {s.name} stream for 5 s "
+                              f"(camera unplugged, or in use by another program?)")
+                    if now - s.last_frame_t > 12 and (args.frames or args.no_display):
+                        alive = False
+                    continue
+                if recording:                         # the frame as the camera sent it
+                    s.record_dir.mkdir(parents=True, exist_ok=True)
+                    cv2.imwrite(str(s.record_dir / f"{recording}_{stamp}_{record_left:02d}.png"), frame)
+                    saved_any = True
+                t0 = time.time()
+                found = detector.detect_all(frame)
+                took = (time.time() - t0) * 1000
+                s.ms = 0.9 * s.ms + 0.1 * took if s.n_frames else took
+                s.n_frames += 1
+                phones = [d for d in found if d[5] == PHONE]
+                s.n_phone += bool(phones)
+                if phones:
+                    s.last_seen = t0
+                if not args.no_display:
+                    show(s, frame, found, phones, args, t0, recording, record_left, message)
+            if not alive:
+                break
+            if saved_any:
+                record_left -= 1
+                if not record_left:
+                    where = ", ".join(f"{s.record_dir.parent.name}/{s.record_dir.name}" for s in streams)
+                    message = f"saved {RECORD_FRAMES} '{recording}' frames to {where}"
+                    print(message)
+                    recording = None
+            if args.no_display:
+                time.sleep(0.002)
+                continue
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
+                break
+            if key in RECORD_KEYS and not recording:
+                recording, record_left, message = RECORD_KEYS[key], RECORD_FRAMES, ""
+                stamp = time.strftime("%H%M%S")
+    except KeyboardInterrupt:
+        pass
+    finally:
+        for s in streams:
+            s.close()
+        cv2.destroyAllWindows()
+    for s in streams:
+        print(f"{s.name}: {s.n_frames} frames, phone seen in {s.n_phone}, {s.ms:.0f} ms per detection")
+    return alive
 
 
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
-    p.add_argument("--source", choices=("rgb", "ir"), default="rgb",
-                   help="rgb = a colour camera (default); ir = the LogiInsight near-infrared stream")
-    p.add_argument("--device", type=int, help="camera index (default: ask for rgb, auto-detect for ir)")
+    p.add_argument("--source", choices=("rgb", "ir", "both"), default="rgb",
+                   help="rgb = a colour camera (default); ir = the LogiInsight near-infrared stream; "
+                        "both = the two together, one window each")
+    p.add_argument("--device", type=int, help="colour camera index (default: ask); with --source ir, the infrared index")
+    p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--width", type=int, default=1280, help="colour stream width")
     p.add_argument("--height", type=int, default=720, help="colour stream height")
     p.add_argument("--format", choices=("MJPG", "YUY2", "NV12"), default="MJPG",
-                   help="colour stream format; use YUY2 when the infrared stream is open too, "
-                        "since MJPG on the colour side slows infrared to about 1 fps")
+                   help="colour stream format (with --source both, MJPG is replaced by YUY2)")
     p.add_argument("--size", choices=list(IR_SIZES), default="512x640", help="infrared frame size")
     p.add_argument("--ir-enhance", choices=ENHANCE_MODES, default="stretch",
                    help="contrast step for grey frames before detection (default: stretch)")
@@ -268,7 +438,7 @@ def main():
     p.add_argument("--image", help="run on this picture file instead of a camera")
     p.add_argument("--save", help="with --image: write the annotated picture here")
     p.add_argument("--eval", metavar="DIR", help="score the frames saved with p / n in this folder, then exit")
-    p.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run until quit)")
+    p.add_argument("--frames", type=int, default=0, help="stop after N frames per stream (0 = run until quit)")
     p.add_argument("--no-display", action="store_true", help="no window; print a summary")
     args = p.parse_args()
 
@@ -281,75 +451,15 @@ def main():
         return
 
     try:
-        cap, description, skip = open_stream(args)
+        streams = open_streams(args)
     except Exception as e:                            # CameraNotFoundError, defined in the SDK
         if type(e).__name__ != "CameraNotFoundError":
             raise
         sys.exit(f"ERROR: {e}")
-    print(f"Opened {description}")
-    record_dir = CAPTURE_DIR / f"phone_{args.source}"
-
-    last_seen, n_frames, n_phone, ms = -1e9, 0, 0, 0.0
-    recording, record_left, message = None, 0, ""
-    try:
-        while not args.frames or n_frames < args.frames:
-            ok, frame = cap.read()
-            if not ok or frame is None:
-                if not args.no_display and cv2.waitKey(1) & 0xFF in (ord("q"), 27):
-                    break
-                continue
-            if skip:
-                skip -= 1
-                continue
-            if recording:                             # the frame as the camera sent it
-                record_dir.mkdir(parents=True, exist_ok=True)
-                stamp = time.strftime("%H%M%S")
-                cv2.imwrite(str(record_dir / f"{recording}_{stamp}_{record_left:02d}.png"), frame)
-                record_left -= 1
-                if not record_left:
-                    message = f"saved {RECORD_FRAMES} '{recording}' frames to {record_dir.relative_to(ROOT)}"
-                    print(message)
-                    recording = None
-
-            t0 = time.time()
-            found = detector.detect_all(frame)
-            ms = 0.9 * ms + 0.1 * (time.time() - t0) * 1000 if n_frames else (time.time() - t0) * 1000
-            n_frames += 1
-            phones = [d for d in found if d[5] == PHONE]
-            n_phone += bool(phones)
-            if phones:
-                last_seen = t0
-            if args.no_display:
-                continue
-
-            view = enhance_grey(frame, args.ir_enhance) if is_grey(frame) else frame   # show what the model saw
-            draw(view, found, args.all)
-            if view.shape[0] < 700:                   # the infrared sizes are small on screen
-                k = 800 / view.shape[0]
-                view = cv2.resize(view, None, fx=k, fy=k, interpolation=cv2.INTER_LINEAR)
-            h, w = view.shape[:2]
-            big = w / 1280
-            if recording:
-                label(view, f"recording '{recording}': {record_left} frames left", (20, h // 2), 0.8, CYAN)
-            elif t0 - last_seen <= args.hold:
-                cv2.rectangle(view, (0, 0), (w - 1, h - 1), RED, 24)
-                (tw, _), _ = cv2.getTextSize("PHONE", cv2.FONT_HERSHEY_SIMPLEX, 5.0 * big, 14)
-                cv2.putText(view, "PHONE", ((w - tw) // 2, h - 80), cv2.FONT_HERSHEY_SIMPLEX, 5.0 * big, RED, 14)
-            best = f"{phones[0][4]:.2f}" if phones else "-"
-            label(view, f"phone score {best} (needs {args.min_score:.2f})   {ms:.0f} ms", (28, 48), 0.65, WHITE)
-            label(view, message or "p: record phone   n: record no phone   q: quit", (28, h - 30), 0.5, WHITE, 1)
-            cv2.imshow(WINDOW, view)
-            key = cv2.waitKey(1) & 0xFF
-            if key in (ord("q"), 27):
-                break
-            if key in RECORD_KEYS and not recording:
-                recording, record_left, message = RECORD_KEYS[key], RECORD_FRAMES, ""
-    except KeyboardInterrupt:
-        pass
-    finally:
-        cap.release()
-        cv2.destroyAllWindows()
-    print(f"{n_frames} frames, phone seen in {n_phone}, {ms:.0f} ms per frame")
+    for s in streams:
+        print(f"Opened {s.name}: {s.description}")
+    if not run(streams, detector, args):
+        sys.exit("ERROR: a stream stopped delivering frames.")
 
 
 if __name__ == "__main__":
