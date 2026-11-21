@@ -237,3 +237,6 @@ mac/probe_colour.jpg
 
 # camera login kept locally; never commit it
 logiwebcam.secrets
+
+# score logs written by call/score_sender.py
+call/scores/

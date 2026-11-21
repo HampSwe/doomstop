@@ -67,3 +67,19 @@ result = p.analyse()               # or analyse(topics=[(0, "Intro"), (200, "Dem
 print_report(result)
 result["best_part"], result["peaks"], result["dips"], result["topics"]
 ```
+
+## Live demo: the score from the camera computer
+
+`call/score_sender.py` runs on the computer with the LogiInsight camera, computes the attention score exactly as
+`dashboard.py` does, and sends it to this live view over the network (UDP, `time,score` lines, 10 a second).
+
+```bash
+# presenter computer: listen for scores from other computers, settings for a few-minute talk
+python attention/live_view.py --udp 8767 --bind 0.0.0.0 --short --report talk.png
+# camera computer (the presenter's address from the line live_view.py prints)
+python call/score_sender.py --to 172.20.10.3                 # Windows / Linux, colour + infrared
+python call/score_sender.py --to 172.20.10.3 --simulate      # no camera: a made-up score, for testing
+```
+
+The window also marks the max and min of the smoothed attention so far, and says so in red when no score has
+arrived for 3 s. Closing it prints the report and saves `--report`.
