@@ -227,3 +227,6 @@ captures/
 
 # Object detector for phone_detect.py (34 MB, downloaded on first use)
 models/object_detection_yolox_2022nov.onnx
+
+# MediaPipe hand model (hand_detect.py downloads it on first use)
+models/hand_landmarker.task

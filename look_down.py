@@ -36,6 +36,12 @@ The design comes from recordings of one person in four poses (captures/, keys
     python look_down.py               # finds the LogiInsight colour camera
     python look_down.py --device 1    # or name the camera index
     python look_down.py --no-phone    # FACE and GAZE only
+    python look_down.py --ir          # plus a second window: the infrared stream with its own phone
+                                      # detection and hands (PHONE OUT / PHONE IN HAND)
+
+With --ir the colour stream is opened as YUY2 instead of MJPG (MJPG would slow
+the infrared stream to about 1 frame per second), and the camera's face
+results arrive at about half their usual rate.
 
 Keys in the window:
     c  re-measure the "looking at the screen" pose
@@ -61,9 +67,11 @@ import cv2
 import numpy as np
 
 from face_stream import connect_device_ai, pick_camera  # also puts the SDK on sys.path
-from camera_utils import CameraNotFoundError, describe, open_camera
+from camera_utils import CameraNotFoundError, backend_id, describe, find_camera, open_camera
 from logiwebcam import AiStalenessMonitor
-from phone_detect import PhoneDetector
+from phone_detect import (IR_SIZES, IR_WARMUP_FRAMES, PHONE, PhoneDetector, Recent, Stream, banner,
+                          enhance_grey, phone_score)
+from phone_detect import label as put_label
 
 # MediaPipe face-mesh indexes (the camera's mesh uses the same layout).
 FOREHEAD, CHIN = 10, 152
@@ -94,6 +102,7 @@ RECORD_POSES = {ord("1"): ("screen", "LOOK AT THE SCREEN"),
 CAPTURE_DIR = Path(__file__).resolve().parent / "captures"
 
 WINDOW = "look_down (c / d: calibrate, q: quit)"
+IR_WINDOW = "look_down: infrared"
 GREEN, RED, YELLOW, WHITE, GREY, CYAN = ((0, 200, 0), (0, 0, 255), (0, 255, 255),
                                          (255, 255, 255), (150, 150, 150), (255, 200, 0))
 
@@ -146,6 +155,16 @@ class LookDownDetector:
     @property
     def is_down(self):
         return self.face_down or self.gaze_down
+
+    @property
+    def face_score(self):
+        """Head tilt as 0..1: 0.5 at the FACE threshold, 1 at twice that tilt."""
+        return float(np.clip(self.head / (2 * self.face_threshold), 0.0, 1.0))
+
+    @property
+    def gaze_score(self):
+        """Eyelid drop as 0..1: 0.5 at the GAZE threshold, 1 at twice that drop."""
+        return float(np.clip(self.eyes / (2 * self.gaze_threshold), 0.0, 1.0))
 
     @property
     def calibrating(self):
@@ -268,25 +287,36 @@ def draw_face(frame, face, show_mesh):
 
 
 class PhoneWorker(threading.Thread):
-    """Runs the phone detector on the newest frame in the background."""
+    """Runs the phone detector in the background, on the newest frame of each stream in turn."""
 
-    def __init__(self, detector):
+    def __init__(self, detector, names=("rgb",), ir_hands=None):
+        """`ir_hands`: a hand_detect.HandDetector to also track hands on the "ir" stream."""
         super().__init__(daemon=True, name="phone")
         self.detector = detector
-        self.phones = []            # latest result: [(x, y, w, h, score)] in frame pixels
-        self.last_seen = -1e9       # time of the last frame that showed a phone
-        self._frame = None
+        self.ir_hands = ir_hands
+        self.hand_points = []                         # hands in the latest infrared frame
+        self.use = None                               # hand_detect.PhoneUse for the infrared stream
+        if ir_hands:
+            from hand_detect import PhoneUse
+            self.use = PhoneUse()
+        self.phones = {n: [] for n in names}          # latest result per stream: [(x, y, w, h, score)]
+        self.scores = {n: Recent(PHONE_HOLD_S) for n in names}   # phone confidence per stream
+        self._frames = {n: None for n in names}
         self._wake = threading.Event()
         self._quit = False
         self._warned = False
 
-    def submit(self, frame):
+    def submit(self, frame, name="rgb"):
         """Hand over a frame the caller will not draw on; an unprocessed older one is dropped."""
-        self._frame = frame
+        self._frames[name] = frame
         self._wake.set()
 
-    def is_on(self, now):
-        return now - self.last_seen <= PHONE_HOLD_S
+    def score(self, now, name="rgb"):
+        """0..1: the detector's best phone confidence in that stream over the last PHONE_HOLD_S."""
+        return self.scores[name].max(now)
+
+    def is_on(self, now, name="rgb"):
+        return self.score(now, name) >= self.detector.min_score
 
     def run(self):
         while True:
@@ -294,22 +324,98 @@ class PhoneWorker(threading.Thread):
             self._wake.clear()
             if self._quit:
                 return
-            frame, self._frame = self._frame, None
-            if frame is None:
-                continue
-            try:
-                self.phones = self.detector.detect(frame)
-            except Exception as e:  # keep the face signals running if the detector breaks
-                self.phones = []
-                if not self._warned:
-                    self._warned = True
-                    print(f"WARNING: phone detection failed and is off: {e}")
-            if self.phones:
-                self.last_seen = time.time()
+            for name in self._frames:
+                frame, self._frames[name] = self._frames[name], None
+                if frame is None:
+                    continue
+                try:
+                    candidates = self.detector.candidates(frame)
+                    self.scores[name].add(time.time(), phone_score(candidates))
+                    found = [d[:5] for d in candidates if d[5] == PHONE and d[4] >= self.detector.min_score]
+                except Exception as e:  # keep the face signals running if the detector breaks
+                    found = []
+                    if not self._warned:
+                        self._warned = True
+                        print(f"WARNING: phone detection failed and is off: {e}")
+                self.phones[name] = found
+                if name == "ir" and self.ir_hands:
+                    try:
+                        self.hand_points = self.ir_hands.detect(
+                            frame, time.time(), found[0][:4] if found else self.use.box)
+                    except Exception as e:
+                        self.hand_points = []
+                        if not self._warned:
+                            self._warned = True
+                            print(f"WARNING: hand detection failed: {e}")
+                    self.use.update(found, self.hand_points, time.time())
 
     def stop(self):
         self._quit = True
         self._wake.set()
+        self.join(timeout=2)                          # let a detection in progress finish
+        if self.ir_hands:
+            self.ir_hands.close()
+
+
+def signals(det, worker, now):
+    """Every signal as one dict. Scores are 0..1; None means that signal is switched off.
+
+      face_down, gaze_down          0 or 1
+      face_down_score               head tilt: 0.5 at the FACE threshold
+      gaze_down_score               eyelid drop: 0.5 at the GAZE threshold
+      color_phone                   phone confidence in the colour stream
+      phone                         phone confidence in the infrared stream
+      phone_in_hand                 how steadily a hand has been at that phone
+      gaze_down_x_phone             gaze_down * phone: the infrared phone confidence while looking down, else 0
+    """
+    ir = worker is not None and "ir" in worker.phones
+    phone = worker.score(now, "ir") if ir else None
+    return {
+        "face_down": int(det.face_down),
+        "face_down_score": det.face_score,
+        "gaze_down": int(det.gaze_down),
+        "gaze_down_score": det.gaze_score,
+        "color_phone": worker.score(now, "rgb") if worker else None,
+        "phone": phone,
+        "phone_in_hand": worker.use.in_hand if ir and worker.use else None,
+        "gaze_down_x_phone": int(det.gaze_down) * phone if ir else None,
+    }
+
+
+def draw_signals(frame, values, x, y):
+    """One row per signal: name, value, and a bar that turns red from 0.5."""
+    for i, (name, value) in enumerate(values.items()):
+        row = y + 27 * i
+        put(frame, name, (x, row), 0.5, WHITE, 1)
+        text = "-" if value is None else str(value) if isinstance(value, int) else f"{value:.2f}"
+        put(frame, text, (x + 170, row), 0.5, WHITE, 1)
+        x0, x1 = x + 225, x + 365
+        cv2.rectangle(frame, (x0, row - 13), (x1, row + 3), (25, 25, 25), -1)
+        if value is not None:
+            cv2.rectangle(frame, (x0, row - 13), (x0 + int((x1 - x0) * value), row + 3),
+                          RED if value >= 0.5 else GREEN, -1)
+        cv2.rectangle(frame, (x0, row - 13), (x1, row + 3), GREY, 1)
+
+
+def ir_view(frame, phones, score, needed, mirror, hands=(), use=None):
+    """The infrared picture as the detector sees it (contrast-stretched), with its phone and hand result."""
+    view = enhance_grey(frame)
+    for x, y, w, h, _ in phones:
+        cv2.rectangle(view, (int(x), int(y)), (int(x + w), int(y + h)), RED, 3)
+    if use is not None:
+        from hand_detect import IN_HAND_ON, draw_hands
+        draw_hands(view, hands)
+    if mirror:
+        view = cv2.flip(view, 1)
+    if view.shape[0] < 700:              # the infrared frame is small on screen
+        k = 800 / view.shape[0]
+        view = cv2.resize(view, None, fx=k, fy=k, interpolation=cv2.INTER_LINEAR)
+    banner(view, use, score >= needed)
+    status = f"infrared: phone {score:.2f} / {needed:.2f}"
+    if use is not None:
+        status += f"   in hand {use.in_hand:.2f} / {IN_HAND_ON:.2f}"
+    put_label(view, status, (28, 48), 0.65, WHITE)
+    return view
 
 
 def draw_phones(frame, phones):
@@ -322,6 +428,9 @@ def draw_tile(frame, x0, x1, y0, y1, text, active, scale):
     """One signal lamp: filled red when on, a grey outline when off."""
     cv2.rectangle(frame, (x0, y0), (x1, y1), RED if active else GREY, -1 if active else 2)
     (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 4)
+    if tw > 0.9 * (x1 - x0):                          # a long label: shrink it to fit the lamp
+        scale *= 0.9 * (x1 - x0) / tw
+        (tw, th), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, 4)
     cv2.putText(frame, text, ((x0 + x1 - tw) // 2, (y0 + y1 + th) // 2), cv2.FONT_HERSHEY_SIMPLEX,
                 scale, WHITE if active else GREY, 4, cv2.LINE_AA)
 
@@ -339,13 +448,14 @@ def draw_meter(frame, x, label, value, threshold, active, bottom):
     put(frame, label, (x + (width - tw) // 2, bottom + 24), 0.5, RED if active else WHITE, 1)
 
 
-def draw_hud(frame, det, state, ai_seconds, recorder=None, phone=None):
-    """`phone` is None when the phone detector is off, else (on, best score or None, needed score)."""
+def draw_hud(frame, det, state, ai_seconds, recorder=None, phone=None, values=None):
+    """`phone` is None when the phone detector is off, else (on, score, needed score).
+    `values` is the signals() dict, drawn as a panel."""
     h, w = frame.shape[:2]
     big = w / 1280                       # the large texts scale with the picture
     tiles = [("FACE DOWN", det.face_down), ("GAZE DOWN", det.gaze_down)]
     if phone is not None:
-        tiles.append(("PHONE", phone[0]))
+        tiles.append(("COLOR PHONE", phone[0]))       # the phone seen in this, the colour, stream
     any_on = any(on for _, on in tiles)
     if any_on:
         cv2.rectangle(frame, (0, 0), (w - 1, h - 1), RED, 24)
@@ -376,8 +486,8 @@ def draw_hud(frame, det, state, ai_seconds, recorder=None, phone=None):
     numbers = (f"head {det.head:+.2f} / {det.face_threshold:.2f}   "
                f"eyes {det.eyes:+.2f} / {det.gaze_threshold:.2f}")
     if phone is not None:
-        label += f"   phone: {'SEEN' if phone[0] else 'no'}"
-        numbers += f"   phone {'-' if phone[1] is None else format(phone[1], '.2f')} / {phone[2]:.2f}"
+        label += f"   color phone: {'SEEN' if phone[0] else 'no'}"
+        numbers += f"   color_phone {phone[1]:.2f} / {phone[2]:.2f}"
     put(frame, label, (28, 48), 0.8, RED if any_on else GREEN)
     put(frame, numbers, (28, 80))
     if det.message:
@@ -387,6 +497,8 @@ def draw_hud(frame, det, state, ai_seconds, recorder=None, phone=None):
             (28, 140), 0.6, YELLOW)
     put(frame, "c: screen pose   d: down pose   r: reset   m: mesh   1-4: record poses   q: quit", (28, h - 30), 0.55, WHITE, 1)
 
+    if values:
+        draw_signals(frame, values, 28, 182)
     draw_meter(frame, w - 120, "FACE", det.head, det.face_threshold, det.face_down, tile_top - 50)
     draw_meter(frame, w - 60, "GAZE", det.eyes, det.gaze_threshold, det.gaze_down, tile_top - 50)
 
@@ -400,21 +512,42 @@ def main():
     p.add_argument("--no-phone", action="store_true", help="skip the phone detector (FACE and GAZE only)")
     p.add_argument("--phone-score", type=float, default=0.35,
                    help="confidence the phone detector needs (default 0.35; lower finds more, with more false alarms)")
+    p.add_argument("--ir", action="store_true",
+                   help="also open the infrared stream in a second window, with phone detection on it")
+    p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run until quit)")
     p.add_argument("--no-display", action="store_true", help="no window; print a summary")
     args = p.parse_args()
+    if args.ir and args.no_phone:
+        sys.exit("ERROR: --ir adds phone detection on the infrared stream, so it cannot go with --no-phone.")
 
     client, reason = connect_device_ai(mesh=True)
     if client is None:
         sys.exit(f"ERROR: this needs the camera's face mesh, which is unavailable: {reason}\n"
                  "Run logiinsight_api\\check_connection.py to see what is wrong.")
+    cap = ir = None
     try:
         index = args.device if args.device is not None else pick_camera(client)
-        cap, info = open_camera(index, width=args.width, height=args.height, fourcc="MJPG", fps=30)
+        ir_index, ir_backend = args.ir_device, None
+        if args.ir and ir_index is None:              # look before the colour stream is open
+            print("Looking for the near-infrared (CPD) camera ...")
+            ir_index, ir_backend_name = find_camera("ir")
+            ir_backend = backend_id(ir_backend_name)
+        # With infrared open too, MJPG on the colour side would slow infrared to about 1 fps.
+        cap, info = open_camera(index, width=args.width, height=args.height,
+                                fourcc="YUY2" if args.ir else "MJPG", fps=30)
+        print(f"Opened {describe(info)}")
+        if args.ir:
+            for _ in range(5):                        # colour first, as the API reference advises
+                cap.read()
+            ir_cap, ir_info = open_camera(ir_index, ir_backend, *IR_SIZES["512x640"], "MJPG", 30)
+            ir = Stream("ir", ir_cap, describe(ir_info), IR_WARMUP_FRAMES)
+            print(f"Opened infrared: {ir.description}")
     except CameraNotFoundError as e:
+        if cap is not None:
+            cap.release()
         client.disconnect()
         sys.exit(f"ERROR: {e}")
-    print(f"Opened {describe(info)}")
     print("Look at the screen for a second while it measures your normal pose.")
 
     det = LookDownDetector()
@@ -422,12 +555,21 @@ def main():
     monitor = AiStalenessMonitor()
     phone_worker = None
     if not args.no_phone:
-        phone_worker = PhoneWorker(PhoneDetector(min_score=args.phone_score))
+        ir_hands = None
+        if ir:
+            try:
+                from hand_detect import HandDetector
+                ir_hands = HandDetector()
+            except ImportError:
+                print("NOTE: no hand detection, because the mediapipe package is missing "
+                      "(pip install -r requirements.txt).")
+        phone_worker = PhoneWorker(PhoneDetector(min_score=args.phone_score),
+                                   ("rgb", "ir") if ir else ("rgb",), ir_hands)
         phone_worker.start()
     show_mesh = False
     face, last_ts, last_face_t = None, None, time.time()
     started = time.time()
-    n_frames = n_mesh = n_face_down = n_gaze_down = n_phone = 0
+    n_frames = n_mesh = n_face_down = n_gaze_down = n_phone = n_ir = n_phone_ir = n_in_hand = 0
     try:
         while not args.frames or n_frames < args.frames:
             ok, frame = cap.read()
@@ -439,6 +581,12 @@ def main():
             n_frames += 1
             if phone_worker:
                 phone_worker.submit(frame.copy())     # a copy: this frame gets drawn on below
+            ir_frame = ir.take() if ir else None
+            if ir_frame is not None:
+                phone_worker.submit(ir_frame, "ir")   # never drawn on: its window shows a copy
+                n_ir += 1
+                n_phone_ir += phone_worker.is_on(now, "ir")
+                n_in_hand += bool(phone_worker.use and phone_worker.use.state == "phone in hand")
 
             data = client.get_latest_ai_data()
             if monitor.update(data):
@@ -472,9 +620,10 @@ def main():
             n_gaze_down += det.gaze_down
             phone = None
             if phone_worker:
-                phones = phone_worker.phones
-                phone = (phone_worker.is_on(now), phones[0][4] if phones else None, args.phone_score)
+                phones = phone_worker.phones["rgb"]
+                phone = (phone_worker.is_on(now), phone_worker.score(now), args.phone_score)
                 n_phone += phone[0]
+            values = signals(det, phone_worker, now)
 
             if args.no_display:
                 continue
@@ -483,8 +632,12 @@ def main():
                 draw_phones(frame, phones)
             if not args.no_mirror:
                 frame = cv2.flip(frame, 1)
-            draw_hud(frame, det, state, now - started, recorder, phone)
+            draw_hud(frame, det, state, now - started, recorder, phone, values)
             cv2.imshow(WINDOW, frame)
+            if ir_frame is not None:
+                cv2.imshow(IR_WINDOW, ir_view(ir_frame, phone_worker.phones["ir"], phone_worker.score(now, "ir"),
+                                              args.phone_score, not args.no_mirror,
+                                              phone_worker.hand_points, phone_worker.use))
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
@@ -506,9 +659,12 @@ def main():
         client.disconnect()
         if phone_worker:
             phone_worker.stop()
+        if ir:
+            ir.close()
     print(f"{n_frames} frames, {n_mesh} mesh results, face down in {n_face_down} frames, "
           f"gaze down in {n_gaze_down} frames"
-          + (f", phone seen in {n_phone} frames" if phone_worker else ""))
+          + (f", phone seen in {n_phone} frames" if phone_worker else "")
+          + (f"; infrared: {n_ir} frames, phone seen in {n_phone_ir}, in hand in {n_in_hand}" if ir else ""))
 
 
 if __name__ == "__main__":

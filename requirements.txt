@@ -1,0 +1,4 @@
+﻿# Everything the scripts in this folder need:  pip install -r requirements.txt
+-r logiinsight_api/requirements.txt
+# Hand landmarks (hand_detect.py). It installs opencv-contrib-python next to opencv-python.
+mediapipe

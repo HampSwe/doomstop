@@ -14,6 +14,14 @@ The model file (34 MB) is downloaded into models/ on first use.
 With both streams the colour one is opened as YUY2, not MJPG: MJPG on the
 colour side slows the infrared stream to about 1 frame per second.
 
+On the infrared stream the hands are found too (hand_detect.py), and the phone
+is reported as PHONE OUT (lying there, no hand at it) or PHONE IN HAND.
+--no-hands switches that off.
+
+Scores, all 0..1, shown in the top line of each window:
+  phone     the detector's best confidence that a phone is in the picture, over the last second
+  in hand   how steadily a hand has been at the phone (infrared stream only)
+
     python phone_detect.py --all           # also draw every other object it recognises
     python phone_detect.py --image a.jpg   # run on a picture file instead of a camera
 
@@ -42,6 +50,7 @@ import sys
 import threading
 import time
 import urllib.request
+from collections import deque
 from pathlib import Path
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # hide the per-index camera probe warnings
@@ -67,6 +76,8 @@ COCO = (  # the 80 classes, in the model's output order
     "teddy bear", "hair drier", "toothbrush")
 PHONE = COCO.index("cell phone")
 
+SCORE_FLOOR = 0.05           # detections below this confidence are not reported at all
+
 IR_SIZES = {"256x320": (256, 320), "512x640": (512, 640), "1024x1280": (1024, 1280)}
 IR_WARMUP_FRAMES = 20        # the infrared stream's auto-exposure settles (API reference, section 3)
 ENHANCE_MODES = ("stretch", "clahe", "none")
@@ -75,7 +86,8 @@ RECORD_KEYS = {ord("p"): "phone", ord("n"): "nophone"}
 CAPTURE_DIR = ROOT / "captures"
 
 WINDOW = "phone_detect (q / Esc to quit)"
-RED, GREEN, GREY, WHITE, CYAN = (0, 0, 255), (0, 200, 0), (150, 150, 150), (255, 255, 255), (255, 200, 0)
+RED, GREEN, GREY, WHITE, CYAN, YELLOW = ((0, 0, 255), (0, 200, 0), (150, 150, 150), (255, 255, 255),
+                                         (255, 200, 0), (0, 255, 255))
 
 
 def is_grey(frame):
@@ -128,7 +140,12 @@ class PhoneDetector:
         return self._grid_for[(in_h, in_w)]
 
     def detect_all(self, frame):
-        """[(x, y, w, h, score, class_index)] in frame pixels, best first."""
+        """[(x, y, w, h, score, class_index)] in frame pixels, best first, at `min_score` or above."""
+        return [d for d in self.candidates(frame) if d[4] >= self.min_score]
+
+    def candidates(self, frame):
+        """Like detect_all(), but down to SCORE_FLOOR: for a score, not just a yes / no."""
+        floor = min(SCORE_FLOOR, self.min_score)
         if self.grey_enhance != "none" and is_grey(frame):
             frame = enhance_grey(frame, self.grey_enhance)
         elif frame.ndim == 2:
@@ -147,21 +164,41 @@ class PhoneDetector:
         scores = out[:, 4:5] * out[:, 5:]
         classes = scores.argmax(axis=1)
         best = scores[np.arange(len(classes)), classes]
-        keep = best >= self.min_score
+        keep = best >= floor
         if not keep.any():
             return []
         centre = (out[keep, :2] + offsets[keep]) * strides[keep] / scale
         size = np.exp(out[keep, 2:4]) * strides[keep] / scale
         boxes = np.concatenate((centre - size / 2, size), axis=1)
         best, classes = best[keep], classes[keep]
-        picked = cv2.dnn.NMSBoxesBatched(boxes.tolist(), best.tolist(), classes.tolist(),
-                                         self.min_score, 0.5)
+        picked = cv2.dnn.NMSBoxesBatched(boxes.tolist(), best.tolist(), classes.tolist(), floor, 0.5)
         found = [(*boxes[i].tolist(), float(best[i]), int(classes[i])) for i in np.array(picked).flatten()]
         return sorted(found, key=lambda d: -d[4])
 
     def detect(self, frame):
         """[(x, y, w, h, score)] for every phone in the frame, best first."""
         return [d[:5] for d in self.detect_all(frame) if d[5] == PHONE]
+
+
+def phone_score(candidates):
+    """The detector's confidence, 0..1, that the picture shows a phone: its best phone candidate."""
+    return max((d[4] for d in candidates if d[5] == PHONE), default=0.0)
+
+
+class Recent:
+    """The largest value added in the last `seconds`. Detection flickers frame to frame; this steadies it."""
+
+    def __init__(self, seconds=1.0):
+        self.seconds = seconds
+        self._items = deque()
+
+    def add(self, t, value):
+        self._items.append((t, value))
+
+    def max(self, now):
+        while self._items and now - self._items[0][0] > self.seconds:
+            self._items.popleft()
+        return max((v for _, v in self._items), default=0.0)
 
 
 _shared = None
@@ -191,6 +228,25 @@ def label(frame, text, org, scale, colour, thick=2):
     (tw, th), base = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
     cv2.rectangle(frame, (org[0] - 6, org[1] - th - 8), (org[0] + tw + 6, org[1] + base + 4), (25, 25, 25), -1)
     cv2.putText(frame, text, org, cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thick, cv2.LINE_AA)
+
+
+def banner(view, use, phone_on):
+    """The big text at the bottom of a window. `use` is a hand_detect.PhoneUse, or None for phone-only."""
+    h, w = view.shape[:2]
+    if use is not None:
+        text, colour = {"phone in hand": ("PHONE IN HAND", RED), "phone out": ("PHONE OUT", YELLOW)}.get(
+            use.state, (None, None))
+    else:
+        text, colour = ("PHONE", RED) if phone_on else (None, None)
+    if text is None:
+        return
+    if colour == RED:
+        cv2.rectangle(view, (0, 0), (w - 1, h - 1), RED, 24)
+    (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 1.0, 2)
+    scale = min(0.8 * w / tw, 6.0)                    # fit the window width
+    thick = max(2, int(scale * 2.5))
+    (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, scale, thick)
+    cv2.putText(view, text, ((w - tw) // 2, h - 70), cv2.FONT_HERSHEY_SIMPLEX, scale, colour, thick, cv2.LINE_AA)
 
 
 def run_on_image(detector, path, show_all, out_path):
@@ -234,15 +290,18 @@ class Stream:
     """One camera. A background reader keeps only the newest frame, so a slow
     detector never falls behind the live picture and the camera is always read."""
 
-    def __init__(self, name, cap, description, skip=0):
+    def __init__(self, name, cap, description, skip=0, hold=1.0):
         self.name, self.cap, self.description = name, cap, description
         self.window = f"phone_detect: {name} (q / Esc to quit)"
         self.record_dir = CAPTURE_DIR / f"phone_{name}"
-        self.last_seen = -1e9          # time a phone was last found
+        self.phone_score = Recent(hold)   # 0..1: best phone confidence over the last `hold` seconds
         self.last_frame_t = time.time()
         self.n_frames = self.n_phone = 0
         self.ms = 0.0
         self.warned = False
+        self.hands = self.use = None   # a hand_detect.HandDetector and PhoneUse, when hands are tracked
+        self.hand_points = []
+        self.states = {}               # frames spent in each phone-use state
         self._skip, self._frame, self._fresh, self._quit = skip, None, False, False
         self._thread = threading.Thread(target=self._read, daemon=True, name=f"read-{name}")
         self._thread.start()
@@ -269,6 +328,8 @@ class Stream:
         self._quit = True
         self._thread.join(timeout=2)
         self.cap.release()
+        if self.hands:
+            self.hands.close()
 
 
 def open_streams(args):
@@ -279,11 +340,11 @@ def open_streams(args):
 
     def colour(index, fmt):
         cap, info = open_camera(index, width=args.width, height=args.height, fourcc=fmt, fps=30)
-        return Stream("rgb", cap, describe(info))
+        return Stream("rgb", cap, describe(info), hold=args.hold)
 
     def infrared(index, backend=None):
         cap, info = open_camera(index, backend, *IR_SIZES[args.size], "MJPG", 30)
-        return Stream("ir", cap, describe(info), IR_WARMUP_FRAMES)
+        return Stream("ir", cap, describe(info), IR_WARMUP_FRAMES, args.hold)
 
     if args.source == "rgb":
         return [colour(args.device if args.device is not None else pick_camera(), args.format)]
@@ -336,20 +397,23 @@ def show(stream, frame, found, phones, args, now, recording, record_left, messag
     if view is frame:
         view = frame.copy()
     draw(view, found, args.all)
+    score = stream.phone_score.max(now)
+    if stream.use:
+        from hand_detect import draw_hands
+        draw_hands(view, stream.hand_points)
     if view.shape[0] < 700:                           # the infrared sizes are small on screen
         k = 800 / view.shape[0]
         view = cv2.resize(view, None, fx=k, fy=k, interpolation=cv2.INTER_LINEAR)
     h, w = view.shape[:2]
-    big = w / 1280
     if recording:
         label(view, f"recording '{recording}': {record_left} left", (20, h // 2), 0.8, CYAN)
-    elif now - stream.last_seen <= args.hold:
-        cv2.rectangle(view, (0, 0), (w - 1, h - 1), RED, 24)
-        (tw, _), _ = cv2.getTextSize("PHONE", cv2.FONT_HERSHEY_SIMPLEX, 5.0 * big, 14)
-        cv2.putText(view, "PHONE", ((w - tw) // 2, h - 80), cv2.FONT_HERSHEY_SIMPLEX, 5.0 * big, RED, 14)
-    best = f"{phones[0][4]:.2f}" if phones else "-"
-    label(view, f"{stream.name}: phone score {best} (needs {args.min_score:.2f})   {stream.ms:.0f} ms",
-          (28, 48), 0.65, WHITE)
+    else:
+        banner(view, stream.use, score >= args.min_score)
+    status = f"{stream.name}: phone {score:.2f} / {args.min_score:.2f}"
+    if stream.use:
+        from hand_detect import IN_HAND_ON
+        status += f"   in hand {stream.use.in_hand:.2f} / {IN_HAND_ON:.2f}"
+    label(view, f"{status}   {stream.ms:.0f} ms", (28, 48), 0.65, WHITE)
     label(view, message or "p: record phone   n: record no phone   q: quit", (28, h - 30), 0.5, WHITE, 1)
     cv2.imshow(stream.window, view)
 
@@ -377,14 +441,18 @@ def run(streams, detector, args):
                     cv2.imwrite(str(s.record_dir / f"{recording}_{stamp}_{record_left:02d}.png"), frame)
                     saved_any = True
                 t0 = time.time()
-                found = detector.detect_all(frame)
+                candidates = detector.candidates(frame)
+                s.phone_score.add(t0, phone_score(candidates))
+                found = [d for d in candidates if d[4] >= detector.min_score]
+                phones = [d for d in found if d[5] == PHONE]
+                if s.hands:
+                    s.hand_points = s.hands.detect(frame, t0, phones[0][:4] if phones else s.use.box)
+                    state = s.use.update(phones, s.hand_points, t0)
+                    s.states[state] = s.states.get(state, 0) + 1
                 took = (time.time() - t0) * 1000
                 s.ms = 0.9 * s.ms + 0.1 * took if s.n_frames else took
                 s.n_frames += 1
-                phones = [d for d in found if d[5] == PHONE]
                 s.n_phone += bool(phones)
-                if phones:
-                    s.last_seen = t0
                 if not args.no_display:
                     show(s, frame, found, phones, args, t0, recording, record_left, message)
             if not alive:
@@ -412,7 +480,8 @@ def run(streams, detector, args):
             s.close()
         cv2.destroyAllWindows()
     for s in streams:
-        print(f"{s.name}: {s.n_frames} frames, phone seen in {s.n_phone}, {s.ms:.0f} ms per detection")
+        print(f"{s.name}: {s.n_frames} frames, phone seen in {s.n_phone}, {s.ms:.0f} ms per detection"
+              + ("; " + ", ".join(f"{state}: {n}" for state, n in sorted(s.states.items())) if s.states else ""))
     return alive
 
 
@@ -435,6 +504,8 @@ def main():
     p.add_argument("--min-score", type=float, default=0.35, help="confidence needed to count (default 0.35)")
     p.add_argument("--hold", type=float, default=1.0, help="keep PHONE shown this long after the last sighting")
     p.add_argument("--all", action="store_true", help="also draw the other object classes")
+    p.add_argument("--no-hands", action="store_true",
+                   help="infrared stream: do not look for hands (PHONE only, no PHONE OUT / PHONE IN HAND)")
     p.add_argument("--image", help="run on this picture file instead of a camera")
     p.add_argument("--save", help="with --image: write the annotated picture here")
     p.add_argument("--eval", metavar="DIR", help="score the frames saved with p / n in this folder, then exit")
@@ -458,6 +529,13 @@ def main():
         sys.exit(f"ERROR: {e}")
     for s in streams:
         print(f"Opened {s.name}: {s.description}")
+        if s.name == "ir" and not args.no_hands:
+            try:
+                from hand_detect import HandDetector, PhoneUse
+                s.hands, s.use = HandDetector(), PhoneUse()
+            except ImportError:
+                print("NOTE: no hand detection, because the mediapipe package is missing "
+                      "(pip install -r requirements.txt).")
     if not run(streams, detector, args):
         sys.exit("ERROR: a stream stopped delivering frames.")
 
