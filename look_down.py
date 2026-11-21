@@ -301,6 +301,7 @@ class PhoneWorker(threading.Thread):
             self.use = PhoneUse()
         self.phones = {n: [] for n in names}          # latest result per stream: [(x, y, w, h, score)]
         self.scores = {n: Recent(PHONE_HOLD_S) for n in names}   # phone confidence per stream
+        self.latest = {n: 0.0 for n in names}         # the same for the latest frame alone, not held
         self._frames = {n: None for n in names}
         self._wake = threading.Event()
         self._quit = False
@@ -330,7 +331,8 @@ class PhoneWorker(threading.Thread):
                     continue
                 try:
                     candidates = self.detector.candidates(frame)
-                    self.scores[name].add(time.time(), phone_score(candidates))
+                    self.latest[name] = phone_score(candidates)
+                    self.scores[name].add(time.time(), self.latest[name])
                     found = [d[:5] for d in candidates if d[5] == PHONE and d[4] >= self.detector.min_score]
                 except Exception as e:  # keep the face signals running if the detector breaks
                     found = []
@@ -510,6 +512,7 @@ class FaceFeed:
         self.client, self.camera_index = client, camera_index
         self.det = LookDownDetector()
         self.face = None                 # the latest face the camera reported, or None
+        self.features = None             # (pitch, lid, opening) of the latest face mesh
         self.n_mesh = 0
         self._monitor = AiStalenessMonitor()
         self._last_ts = None
@@ -533,6 +536,7 @@ class FaceFeed:
         f = features(landmarks)
         if f is not None:                # the mesh is missing from some results
             self.n_mesh += 1
+            self.features = f
             self.det.update(f, now)
         return landmarks
 

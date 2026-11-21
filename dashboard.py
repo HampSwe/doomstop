@@ -1,4 +1,9 @@
-"""One window: the colour and infrared streams side by side, and every signal below them.
+"""One window: the colour and infrared streams side by side, the attention score, and every signal.
+
+The attention score (0 = distracted, 1 = attentive) is the model fitted by
+train.py on data recorded with collect.py. It uses the signals averaged over
+the last few seconds, so it follows what you do with a short delay. Until a
+model has been fitted the row says so.
 
     python dashboard.py               # finds the LogiInsight colour and infrared cameras
     python dashboard.py --device 1    # or name the colour camera index
@@ -36,11 +41,10 @@ import time
 import cv2
 import numpy as np
 
-from look_down import (AI_WARN_S, GREEN, GREY, RED, WHITE, YELLOW, FaceFeed, draw_face, draw_phones,
-                       open_cameras, put, put_centred, signals, start_phone_worker)
-from face_stream import connect_device_ai
-from camera_utils import CameraNotFoundError
+from attention import History, Model
+from engine import Engine, EngineError
 from hand_detect import IN_HAND_ON, draw_hands
+from look_down import AI_WARN_S, GREEN, GREY, RED, WHITE, YELLOW, draw_face, draw_phones, put, put_centred
 from phone_detect import enhance_grey
 
 WINDOW = "doomscroll dashboard (q / Esc to quit)"
@@ -104,13 +108,32 @@ def draw_signal(canvas, x, y, name, value, threshold):
     cv2.rectangle(canvas, (x0, y), (x1, y + 22), GREY, 1)
 
 
-def compose(colour, infrared, values, thresholds, footer, footer_colour):
-    """The whole window: the two views on top, the signals in two columns, a line of text at the bottom."""
+def draw_attention(canvas, y, attention):
+    """The model's attention score as one wide bar: green when attentive, red below 0.5."""
+    put(canvas, "ATTENTION", (PAD, y + 24), 0.8, WHITE, 2, backing=False)
+    x0, x1 = PAD + 300, WIDTH - PAD
+    cv2.rectangle(canvas, (x0, y), (x1, y + 32), (55, 55, 55), -1)
+    if attention is None:
+        put(canvas, "no model yet: record people with collect.py, then run train.py", (x0 + 12, y + 22), 0.55,
+            GREY, 1, backing=False)
+    else:
+        put(canvas, f"{attention:.2f}", (PAD + 190, y + 24), 0.8, WHITE, 2, backing=False)
+        cv2.rectangle(canvas, (x0, y), (x0 + int((x1 - x0) * attention), y + 32),
+                      GREEN if attention >= 0.5 else RED, -1)
+        tick = x0 + (x1 - x0) // 2
+        cv2.line(canvas, (tick, y - 3), (tick, y + 35), WHITE, 2)
+    cv2.rectangle(canvas, (x0, y), (x1, y + 32), GREY, 1)
+
+
+def compose(colour, infrared, values, thresholds, footer, footer_colour, attention=None):
+    """The whole window: the two views, the attention bar, the signals in two columns, a line of text."""
     rows = (len(values) + 1) // 2
-    panel_top = PAD + VIEW_H + 18
+    attention_top = PAD + VIEW_H + 16
+    panel_top = attention_top + 32 + 22
     canvas = np.full((panel_top + rows * ROW_H + 44, WIDTH, 3), BACKGROUND, np.uint8)
     canvas[PAD:PAD + VIEW_H, PAD:PAD + COLOUR_W] = colour
     canvas[PAD:PAD + VIEW_H, PAD + COLOUR_W + GAP:PAD + COLOUR_W + GAP + IR_W] = infrared
+    draw_attention(canvas, attention_top, attention)
     column_w = (WIDTH - 2 * PAD - GAP) // 2
     for i, (name, value) in enumerate(values.items()):
         draw_signal(canvas, PAD + (i % 2) * (column_w + GAP), panel_top + (i // 2) * ROW_H,
@@ -131,54 +154,48 @@ def main():
     p.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run until quit)")
     args = p.parse_args()
 
-    client, reason = connect_device_ai(mesh=True)
-    if client is None:
-        sys.exit(f"ERROR: this needs the camera's face mesh, which is unavailable: {reason}\n"
-                 "Run logiinsight_api\\check_connection.py to see what is wrong.")
     try:
-        cap, index, ir = open_cameras(client, args.device, True, args.ir_device)
-    except CameraNotFoundError as e:
-        client.disconnect()
+        engine = Engine(args.device, args.ir_device, args.phone_score)
+    except EngineError as e:
         sys.exit(f"ERROR: {e}")
     print("Look at the screen for a second while it measures your normal pose.")
 
-    feed = FaceFeed(client, index)
-    det = feed.det
-    worker = start_phone_worker(args.phone_score, True)
+    det = engine.det
+    model = Model.load()
+    history = History(model.windows) if model else History()
+    if model is None:
+        print("No attention model yet: record people with collect.py, then run train.py.")
     thresholds = {"face_down_score": 0.5, "gaze_down_score": 0.5, "color_phone": args.phone_score,
                   "phone": args.phone_score, "phone_in_hand": IN_HAND_ON, "gaze_down_x_phone": args.phone_score}
     hidden = {name for option, names in HIDDEN.items() if not getattr(args, option) for name in names}
-    ir_frame, started, n_frames = None, time.time(), 0
+    n_frames = 0
     message, message_t = "", 0.0
     try:
         while not args.frames or n_frames < args.frames:
-            ok, frame = cap.read()
-            if not ok or frame is None:
+            step = engine.step()
+            if step is None:
                 if cv2.waitKey(1) & 0xFF in (ord("q"), 27):
                     break
                 continue
-            now = time.time()
+            now = step.now
             n_frames += 1
-            worker.submit(frame.copy())               # a copy: this frame gets drawn on below
-            fresh = ir.take()
-            if fresh is not None:
-                ir_frame = fresh
-                worker.submit(fresh, "ir")            # never drawn on: its view is a copy
-            feed.poll(now)
+            history.add(now, step.values)
+            attention = float(model.predict(history.features(now))) if model else None
 
-            values = {name: v for name, v in signals(det, worker, now).items() if name not in hidden}
+            values = {name: v for name, v in step.values.items() if name not in hidden}
             if det.message != message:                # a new note from the detector: show it for a while
                 message, message_t = det.message, now
-            if now - started > AI_WARN_S:
-                footer, colour = f"camera AI on for {int((now - started) // 60)} min: quit soon, it can overheat", YELLOW
+            if now - engine.started > AI_WARN_S:
+                footer, colour = (f"camera AI on for {int((now - engine.started) // 60)} min: "
+                                  "quit soon, it can overheat"), YELLOW
             elif det.message and now - message_t < MESSAGE_S:
                 footer, colour = det.message, YELLOW
             else:
                 footer, colour = "c: screen pose   d: down pose   r: reset   q: quit", GREY
             canvas = compose(
-                colour_view(frame, None if feed.face_lost(now) else feed.face, worker.phones["rgb"], det,
-                            not args.no_mirror),
-                infrared_view(ir_frame, worker, not args.no_mirror), values, thresholds, footer, colour)
+                colour_view(step.frame, engine.face(now), engine.worker.phones["rgb"], det, not args.no_mirror),
+                infrared_view(step.ir_frame, engine.worker, not args.no_mirror),
+                values, thresholds, footer, colour, attention)
             cv2.imshow(WINDOW, canvas)
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
@@ -192,12 +209,9 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
-        cap.release()
-        ir.close()
-        worker.stop()
-        client.disconnect()
+        engine.close()
         cv2.destroyAllWindows()
-    print(f"{n_frames} frames, {feed.n_mesh} face-mesh results")
+    print(f"{n_frames} frames, {engine.feed.n_mesh} face-mesh results")
 
 
 if __name__ == "__main__":
