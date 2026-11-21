@@ -503,6 +503,86 @@ def draw_hud(frame, det, state, ai_seconds, recorder=None, phone=None, values=No
     draw_meter(frame, w - 60, "GAZE", det.eyes, det.gaze_threshold, det.gaze_down, tile_top - 50)
 
 
+class FaceFeed:
+    """Reads the camera's face results and keeps a LookDownDetector up to date."""
+
+    def __init__(self, client, camera_index):
+        self.client, self.camera_index = client, camera_index
+        self.det = LookDownDetector()
+        self.face = None                 # the latest face the camera reported, or None
+        self.n_mesh = 0
+        self._monitor = AiStalenessMonitor()
+        self._last_ts = None
+        self._last_face_t = time.time()
+
+    def poll(self, now):
+        """Fetch the latest result. Returns its landmarks if it is a new result with a face, else None."""
+        data = self.client.get_latest_ai_data()
+        if self._monitor.update(data):
+            print(f"WARNING: the camera AI is not updating, so camera index {self.camera_index} is probably "
+                  "not the LogiInsight colour camera. Quit and try another --device index.")
+        if not data or data.get("timestamp_ms") == self._last_ts:
+            return None
+        self._last_ts = data.get("timestamp_ms")
+        faces = data.get("faces") or []
+        self.face = faces[0] if faces else None
+        if not self.face:
+            return None
+        self._last_face_t = now
+        landmarks = self.face.get("landmarks")
+        f = features(landmarks)
+        if f is not None:                # the mesh is missing from some results
+            self.n_mesh += 1
+            self.det.update(f, now)
+        return landmarks
+
+    def face_lost(self, now):
+        return now - self._last_face_t > FACE_LOST_S
+
+
+def open_cameras(client, device=None, with_ir=False, ir_device=None, width=1280, height=720):
+    """Open the colour stream and, if asked, the infrared one. Returns (capture, index, infrared Stream or None).
+
+    Raises CameraNotFoundError with nothing left open.
+    """
+    index = device if device is not None else pick_camera(client)
+    ir_index, ir_backend = ir_device, None
+    if with_ir and ir_index is None:                  # look before the colour stream is open
+        print("Looking for the near-infrared (CPD) camera ...")
+        ir_index, ir_backend_name = find_camera("ir")
+        ir_backend = backend_id(ir_backend_name)
+    # With infrared open too, MJPG on the colour side would slow infrared to about 1 fps.
+    cap, info = open_camera(index, width=width, height=height, fourcc="YUY2" if with_ir else "MJPG", fps=30)
+    print(f"Opened {describe(info)}")
+    if not with_ir:
+        return cap, index, None
+    try:
+        for _ in range(5):                            # colour first, as the API reference advises
+            cap.read()
+        ir_cap, ir_info = open_camera(ir_index, ir_backend, *IR_SIZES["512x640"], "MJPG", 30)
+    except CameraNotFoundError:
+        cap.release()
+        raise
+    ir = Stream("ir", ir_cap, describe(ir_info), IR_WARMUP_FRAMES)
+    print(f"Opened infrared: {ir.description}")
+    return cap, index, ir
+
+
+def start_phone_worker(phone_score, with_ir):
+    """A running PhoneWorker for the colour stream, plus the infrared one (with hands) if asked."""
+    ir_hands = None
+    if with_ir:
+        try:
+            from hand_detect import HandDetector
+            ir_hands = HandDetector()
+        except ImportError:
+            print("NOTE: no hand detection, because the mediapipe package is missing "
+                  "(pip install -r requirements.txt).")
+    worker = PhoneWorker(PhoneDetector(min_score=phone_score), ("rgb", "ir") if with_ir else ("rgb",), ir_hands)
+    worker.start()
+    return worker
+
+
 def main():
     p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     p.add_argument("--device", type=int, help="camera index (default: find the LogiInsight camera)")
@@ -525,51 +605,20 @@ def main():
     if client is None:
         sys.exit(f"ERROR: this needs the camera's face mesh, which is unavailable: {reason}\n"
                  "Run logiinsight_api\\check_connection.py to see what is wrong.")
-    cap = ir = None
     try:
-        index = args.device if args.device is not None else pick_camera(client)
-        ir_index, ir_backend = args.ir_device, None
-        if args.ir and ir_index is None:              # look before the colour stream is open
-            print("Looking for the near-infrared (CPD) camera ...")
-            ir_index, ir_backend_name = find_camera("ir")
-            ir_backend = backend_id(ir_backend_name)
-        # With infrared open too, MJPG on the colour side would slow infrared to about 1 fps.
-        cap, info = open_camera(index, width=args.width, height=args.height,
-                                fourcc="YUY2" if args.ir else "MJPG", fps=30)
-        print(f"Opened {describe(info)}")
-        if args.ir:
-            for _ in range(5):                        # colour first, as the API reference advises
-                cap.read()
-            ir_cap, ir_info = open_camera(ir_index, ir_backend, *IR_SIZES["512x640"], "MJPG", 30)
-            ir = Stream("ir", ir_cap, describe(ir_info), IR_WARMUP_FRAMES)
-            print(f"Opened infrared: {ir.description}")
+        cap, index, ir = open_cameras(client, args.device, args.ir, args.ir_device, args.width, args.height)
     except CameraNotFoundError as e:
-        if cap is not None:
-            cap.release()
         client.disconnect()
         sys.exit(f"ERROR: {e}")
     print("Look at the screen for a second while it measures your normal pose.")
 
-    det = LookDownDetector()
+    feed = FaceFeed(client, index)
+    det = feed.det
     recorder = PoseRecorder()
-    monitor = AiStalenessMonitor()
-    phone_worker = None
-    if not args.no_phone:
-        ir_hands = None
-        if ir:
-            try:
-                from hand_detect import HandDetector
-                ir_hands = HandDetector()
-            except ImportError:
-                print("NOTE: no hand detection, because the mediapipe package is missing "
-                      "(pip install -r requirements.txt).")
-        phone_worker = PhoneWorker(PhoneDetector(min_score=args.phone_score),
-                                   ("rgb", "ir") if ir else ("rgb",), ir_hands)
-        phone_worker.start()
+    phone_worker = None if args.no_phone else start_phone_worker(args.phone_score, ir is not None)
     show_mesh = False
-    face, last_ts, last_face_t = None, None, time.time()
     started = time.time()
-    n_frames = n_mesh = n_face_down = n_gaze_down = n_phone = n_ir = n_phone_ir = n_in_hand = 0
+    n_frames = n_face_down = n_gaze_down = n_phone = n_ir = n_phone_ir = n_in_hand = 0
     try:
         while not args.frames or n_frames < args.frames:
             ok, frame = cap.read()
@@ -588,26 +637,14 @@ def main():
                 n_phone_ir += phone_worker.is_on(now, "ir")
                 n_in_hand += bool(phone_worker.use and phone_worker.use.state == "phone in hand")
 
-            data = client.get_latest_ai_data()
-            if monitor.update(data):
-                print(f"WARNING: the camera AI is not updating, so camera index {index} is probably "
-                      "not the LogiInsight colour camera. Quit and try another --device index.")
-            if data and data.get("timestamp_ms") != last_ts:   # a new AI result
-                last_ts = data.get("timestamp_ms")
-                faces = data.get("faces") or []
-                face = faces[0] if faces else None
-                if face:
-                    last_face_t = now
-                    saved = recorder.add(face.get("landmarks"), frame.shape[1::-1])
-                    if saved:
-                        det.message = saved
-                        print(saved)
-                    f = features(face.get("landmarks"))
-                    if f is not None:                           # the mesh is missing from some results
-                        n_mesh += 1
-                        det.update(f, now)
+            landmarks = feed.poll(now)
+            if landmarks:
+                saved = recorder.add(landmarks, frame.shape[1::-1])
+                if saved:
+                    det.message = saved
+                    print(saved)
 
-            face_lost = now - last_face_t > FACE_LOST_S
+            face_lost = feed.face_lost(now)
             if det.base is None:
                 state = "wait"
             elif det.is_down:
@@ -627,7 +664,7 @@ def main():
 
             if args.no_display:
                 continue
-            draw_face(frame, None if face_lost else face, show_mesh)
+            draw_face(frame, None if face_lost else feed.face, show_mesh)
             if phone_worker:
                 draw_phones(frame, phones)
             if not args.no_mirror:
@@ -661,7 +698,7 @@ def main():
             phone_worker.stop()
         if ir:
             ir.close()
-    print(f"{n_frames} frames, {n_mesh} mesh results, face down in {n_face_down} frames, "
+    print(f"{n_frames} frames, {feed.n_mesh} mesh results, face down in {n_face_down} frames, "
           f"gaze down in {n_gaze_down} frames"
           + (f", phone seen in {n_phone} frames" if phone_worker else "")
           + (f"; infrared: {n_ir} frames, phone seen in {n_phone_ir}, in hand in {n_in_hand}" if ir else ""))
