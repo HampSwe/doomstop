@@ -6,9 +6,10 @@
 The window tells the person exactly what to do. Each scenario has a "get
 ready" page (what to set up, then SPACE), a 3-second countdown, and the
 recording, during which the current action is shown in large letters with the
-seconds left. A beep marks every change of action and a double beep the end of
-a scenario, because during the phone scenarios the person is not looking at
-the laptop. Turn the sound on.
+seconds left. Everything is also said in sound, because during the phone
+scenarios the person is not looking at the laptop: three short low beeps count
+down 3, 2, 1, a long beep starts the recording, a beep marks every change of
+action, and a double beep ends the scenario. Turn the sound on.
 
 What is recorded into data/attention_<person>_<time>.csv, one row for every
 camera frame of every recording (roughly 10 to 30 a second): the time, the
@@ -123,7 +124,13 @@ WHITE, GREY, GREEN, ORANGE, YELLOW, RED, DARK = ((255, 255, 255), (150, 150, 150
 
 
 def beep(kind):
-    """A beep for a change of action, a double beep for the end of a scenario. Never blocks the camera."""
+    """The sounds of a scenario. Never blocks the camera.
+
+    "tick"    short and low: one for each second of the countdown (3, 2, 1)
+    "start"   long: recording starts now
+    "change"  change of action
+    "end"     double beep: the scenario is over
+    """
     def play():
         try:
             import winsound
@@ -133,6 +140,10 @@ def beep(kind):
             winsound.Beep(1175, 160)
             time.sleep(0.09)
             winsound.Beep(1175, 160)
+        elif kind == "tick":
+            winsound.Beep(587, 120)
+        elif kind == "start":
+            winsound.Beep(880, 450)
         else:
             winsound.Beep(880, 200)
     threading.Thread(target=play, daemon=True).start()
@@ -149,6 +160,7 @@ class Session:
         self.quit = False
         self._mark = 0.0             # when the current countdown or recording started
         self._rows, self._phase_i = [], 0
+        self._ticks = 0              # countdown beeps played so far
 
     # --- what the drawing needs -------------------------------------------------
     @property
@@ -181,11 +193,17 @@ class Session:
         elif self.mode == "calibrate" and not det.calibrating and det.base is not None:
             self.mode = "ready"
         elif self.mode == "ready" and key == SPACE:
-            self.mode, self._mark = "countdown", now
+            self.mode, self._mark, self._ticks = "countdown", now, 1
+            beep("tick")                                # "3"
         elif self.mode == "countdown" and self.elapsed(now) >= COUNTDOWN_S:
             self.mode, self._mark = "run", now
             self._rows, self._phase_i = [], 0
-            beep("change")
+            beep("start")
+        elif self.mode == "countdown":
+            due = int(self.elapsed(now)) + 1            # a beep as each of "2" and "1" appears
+            if due > self._ticks:
+                self._ticks = due
+                beep("tick")
         elif self.mode == "run":
             self._record(step)
         elif self.mode == "saved" and key == ord("r"):
@@ -290,7 +308,8 @@ def draw(session, step):
         centred(canvas, "ATTENTION DATA COLLECTION", 60, 1.2)
         left = previews(canvas, session, step) - 20
         y = bullets(canvas, ("Turn your sound on.",
-                             "A beep means: change what you are doing.",
+                             "Three short beeps count down 3, 2, 1. The long beep means: start.",
+                             "A beep after that means: change what you are doing.",
                              f"There are {n} short scenarios, about 4 minutes."), 130, left)
         bullets(canvas, ("Each one first shows what to set up. Take your time there.",
                          "Then do exactly what the large text says, until the beep.",
@@ -320,7 +339,7 @@ def draw(session, step):
         centred(canvas, "START NOW:", 200, 1.4, YELLOW, 3)
         centred(canvas, first.action, 300, 2.2, ORANGE if first.distracted else GREEN, 5)
         centred(canvas, str(max(int(np.ceil(left)), 1)), 520, 6.0, WHITE, 12)
-        centred(canvas, "recording starts at the beep", 640, 0.9, GREY)
+        centred(canvas, "recording starts at the long beep", 640, 0.9, GREY)
 
     elif mode == "run":
         t = session.elapsed(now)
