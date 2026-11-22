@@ -52,9 +52,7 @@ Each signal is averaged over the last 2 seconds and over the last 6 seconds, whi
 | `phone_in_hand` | +0.48 | +0.13 |
 | `gaze_down_x_phone_in_hand` | −1.15 | −0.77 |
 
-**Training data.** Three people each followed ten short scripted scenarios in front of the camera: working with the phone away or on the desk, looking down at the keyboard, holding the phone while reading the screen, scrolling in three positions, quick glances at the phone, and working, scrolling, then working again. That is about 10 minutes of recording in total and 9,792 rows, one per camera frame; 9,074 of them were used for fitting. Only the signal values were recorded, no video. The target attention falls from 1 to 0 over 4 seconds of scripted distraction and recovers over 1.5 seconds.
-
-The model is trained on these three people and was tested on a fourth person, who is not in the training data. In a cross-check on the recordings themselves (fitted on two of the people and scored on the third, for each person in turn), it calls attentive or distracted correctly in 75 % of moments.
+**Training data.** Three people each followed ten short scripted scenarios in front of the camera: working with the phone away or on the desk, looking down at the keyboard, holding the phone while reading the screen, scrolling in three positions, quick glances at the phone, and working, scrolling, then working again. That is about 10 minutes of recording in total and 9,792 rows, one per camera frame; 9,074 of them were used for fitting. The model is trained on these three people and was tested on a fourth person, who is not in the training data. In a cross-check on the recordings themselves (fitted on two of the people and scored on the third, for each person in turn), it calls attentive or distracted correctly in 75 % of moments.
 
 **Robustness.** It does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76.
 
