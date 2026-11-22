@@ -46,7 +46,9 @@ This opens the dashboard, with both camera pictures, the attention score and the
 
 `python dashboard.py` shows the same dashboard without the notification.
 
-### Presenter
+### Audience engagement
+
+#### Presenter
 
 Start the presenter’s side first: it prints the address that the listener’s command needs. It needs a few more packages:
 
@@ -57,7 +59,7 @@ python attention/live_insights.py --udp 8767 --bind 0.0.0.0 --record
 
 The LED eye appears and the microphone is recorded. When the talk is over, close the eye to get the feedback card. For topics written by the LLM, [Ollama](https://ollama.com) must be running with the model `qwen2.5:3b`; without it, the topics are plain keywords. The presenter’s side was built and tested on a Mac. [`DEMO.md`](DEMO.md) has the details.
 
-### Listener
+#### Listener
 
 On the computer with the camera, with the presenter’s address in place of `172.20.10.3`:
 
