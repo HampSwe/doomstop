@@ -468,7 +468,7 @@ def draw_timeline(ax1, res, title="Attention over the presentation", min_span=0.
     x1 = max(t[-1], t[0] + min_span)
     ax1.set_xlim(t[0], x1)
     ax1.set_ylabel("attention")
-    tick = next((v for v in (30, 60, 120, 300, 600, 900, 1800, 3600) if (x1 - t[0]) / v <= 10), 7200)
+    tick = next((v for v in (5, 10, 15, 30, 60, 120, 300, 600, 900, 1800, 3600) if (x1 - t[0]) / v <= 10), 7200)
     ax1.xaxis.set_major_locator(MultipleLocator(tick))
     ax1.xaxis.set_major_formatter(FuncFormatter(lambda v, _: hms(max(v, 0))))
     ax1.set_title(title, loc="left", fontsize=12, color=TEXT, weight="bold", pad=10)

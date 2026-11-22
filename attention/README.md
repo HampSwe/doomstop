@@ -37,6 +37,28 @@ python attention/simulate.py --udp 8767                                  #   ...
 python attention/simulate.py --speed 0 > talk.csv                        # test data as a file
 ```
 
+**Presenter feedback (with the transcript):** `live_insights.py` combines the live attention stream with
+`attention_insights/`. During the talk the presenter sees only a small retro meter in the corner: an
+LED eye, after the LED ear of classroom noise meters, and nothing else. As the audience's attention
+rises, the iris ring and the eyelids light up from the middle of the eye out to its sides, and the whole
+eye turns from red to amber to green. When the stream ends, a feedback card pops up with the attention
+over the whole talk. Click (or drag along) the graph to see the topic at that moment; the arrow keys step
+through the talk. A local LLM (Ollama) names the topics; without one they are keywords from the transcript.
+
+`attention_insights` also writes `report.md`, `timeline.png` and `insights.json` into
+`attention_insights/data/live/`, and the card's **OPEN REPORT** button opens them. To end the talk early,
+close the meter with its × box.
+
+```bash
+python attention/simulate.py --demo-talk | python attention/live_insights.py    # test: the recorded 30 s talk
+my_feed | python attention/live_insights.py                    # live attention + words from your pipeline
+my_feed | python attention/live_insights.py --words words.json # transcript known in advance
+python attention/live_insights.py --udp 8767 --no-window       # UDP input, terminal output only
+```
+
+Stream lines: `<time>,<attention>` for attention samples and `word,<start>,<end>,<word>` for each
+recognised word. `simulate.py --csv attention.csv --words words.json` replays any recording that way.
+
 **Input CSV:** a time column (seconds, `mm:ss`, `h:mm:ss` or ISO timestamps) and a score column. The names
 are detected automatically (`time`/`t`/`t_s`/`timestamp` and `attention`/`score`/`engagement`/`level`/`focus`)
 or set with `--time-col` and `--score-col`. Rows with the same time, e.g. one per face cam, are averaged. A
