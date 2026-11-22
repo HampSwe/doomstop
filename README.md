@@ -69,27 +69,17 @@ The LED eye appears and the microphone is recorded. When the talk is over, close
 
 ## Technical details
 
-**Features.** The model reads five signals, each between 0 and 1:
+**Features and model.** The model reads five signals, each between 0 and 1. Each signal is averaged over the last 2 seconds and over the last 6 seconds, which gives the model ten inputs. The averages are what make the score depend on time: a quick glance at the phone barely moves it, while continued scrolling does.
 
-| Signal | What it measures |
-|---|---|
-| `gaze_down_score` | How far the upper eyelids have dropped from the person’s normal pose, measured on the face landmarks that the LogiInsight camera computes. The normal pose is measured in the first second. |
-| `color_phone` | The object detector’s confidence that a phone is in the colour picture. |
-| `phone` | The object detector’s confidence that a phone is in the infrared picture. |
-| `phone_in_hand` | How close a hand is to that phone in the infrared picture, from hand landmarks (MediaPipe), smoothed over time. |
-| `gaze_down_x_phone_in_hand` | `phone_in_hand` while the person is looking down, otherwise 0. |
+A logistic regression turns the ten inputs into the attention score. The last two columns of the table are its weights, per standard deviation of each input; a negative weight lowers the attention score. The bias is +1.33.
 
-Each signal is averaged over the last 2 seconds and over the last 6 seconds, which gives the model ten inputs. The averages are what make the score depend on time: a quick glance at the phone barely moves it, while continued scrolling does.
-
-**Model.** A logistic regression turns the ten inputs into the attention score. These are its weights, per standard deviation of each input; a negative weight lowers the attention score. The bias is +1.33.
-
-| Signal | 2 s average | 6 s average |
-|---|---|---|
-| `gaze_down_score` | −2.03 | +0.58 |
-| `color_phone` | +0.48 | +0.05 |
-| `phone` | +0.38 | +0.81 |
-| `phone_in_hand` | +0.48 | +0.13 |
-| `gaze_down_x_phone_in_hand` | −1.15 | −0.77 |
+| Signal | What it measures | Weight, 2 s average | Weight, 6 s average |
+|---|---|---|---|
+| `gaze_down_score` | How far the upper eyelids have dropped from the person’s normal pose, measured on the face landmarks that the LogiInsight camera computes. The normal pose is measured in the first second. | −2.03 | +0.58 |
+| `color_phone` | The object detector’s confidence that a phone is in the colour picture. | +0.48 | +0.05 |
+| `phone` | The object detector’s confidence that a phone is in the infrared picture. | +0.38 | +0.81 |
+| `phone_in_hand` | How close a hand is to that phone in the infrared picture, from hand landmarks (MediaPipe), smoothed over time. | +0.48 | +0.13 |
+| `gaze_down_x_phone_in_hand` | `phone_in_hand` while the person is looking down, otherwise 0. | −1.15 | −0.77 |
 
 **Training data.** Three people each followed ten short scripted scenarios in front of the camera: working with the phone away or on the desk, looking down at the keyboard, holding the phone while reading the screen, scrolling in three positions, quick glances at the phone, and working, scrolling, then working again. That is about 10 minutes of recording in total and 9,792 rows, one per camera frame; 9,074 of them were used for fitting. The model is trained on these three people and was tested on a fourth person, who is not in the training data. In a cross-check on the recordings themselves (fitted on two of the people and scored on the third, for each person in turn), it calls attentive or distracted correctly in 75 % of moments.
 
