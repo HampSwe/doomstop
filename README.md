@@ -22,7 +22,7 @@ During the talk, the presenter sees a small LED eye in the corner of the screen.
 
 Left: the audience is fully focused. Right: attention is at about half.
 
-When the talk is over, Doomstop shows a feedback card: the attention over the whole talk, the moments that gained and lost the audience, and what was being said at those moments. This is done by first transcribing the meeting. A small local LLM then analyzes the text and picks out keywords and topics for the different time intervals. The words come from a transcript of the presenter’s own microphone, made on the presenter’s computer.
+When the talk is over, Doomstop shows a feedback card: the attention over the whole talk, the moments that gained and lost the audience, and what was being said at those moments. This is done by first transcribing the meeting (Whisper). A small local LLM (Qwen 2.5, 3B) then analyzes the text and picks out keywords and topics for the different time intervals. The words come from a transcript of the presenter’s own microphone, made on the presenter’s computer.
 
 <img src="images/feedback_card.jpg" alt="The feedback card after a talk, titled How the room felt: a graph of the attention over a one-minute talk, with the lowest point at 0:45 marked 11 % attention and labelled with the topic being spoken about" width="550">
 
