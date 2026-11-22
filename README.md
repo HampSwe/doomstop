@@ -8,4 +8,16 @@ Doomstop utilizes Logitech’s LogiInsight camera and software. To classify atte
 
 ![The Doomstop dashboard: the colour and infrared streams with the detected face, eyes and hands, the attention score, and the signals behind it](images/dashboard.png)
 
+## Doomstop for the online audience
+
+In an online lecture or meeting, the computer in front of the audience runs the detector and sends only the attention score to the presenter: a number between 0 and 1, ten times a second. No video and no pictures leave the audience’s computer.
+
+During the talk, the presenter sees a small LED eye in the corner of the screen. It turns from red to green as the audience’s attention rises, so there are no numbers to read while speaking.
+
+<img src="images/attention_eye.png" alt="The presenter's attention meter: an LED eye, fully lit and green when the audience is paying attention" width="200">
+
+When the talk is over, Doomstop shows a feedback card: the attention over the whole talk, the moments that gained and lost the audience, and what was being said at those moments. The words come from a transcript of the presenter’s own microphone, made on the presenter’s computer.
+
 **On a Mac?** The LogiInsight colour camera isn't listed by macOS: use [`mac/`](mac/README.md) (Mac only).
+
+This was created for the Lauzhack hackathon 2027 at EPFL, for Logitech’s challenge.
