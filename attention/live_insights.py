@@ -129,10 +129,16 @@ class Talk:
         self.blocks, self.frames, self.peak = queue.Queue(), 0, 0.0
         self.audio, self.audio_lock = [], threading.Lock()   # every block so far, for the live transcription
         self.segments, self.done_upto = [], 0                # transcribed segments; samples transcribed so far
-        self.stopping = threading.Event()
+        self.stopping, self.stopped = threading.Event(), threading.Event()  # the talk is over; the mic has stopped
         self.file = sf.SoundFile(self.wav, mode="w", samplerate=RATE, channels=1, subtype="PCM_16")
-        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
-                                     callback=lambda data, n, t, status: self.blocks.put(data[:, 0].copy()))
+
+        def record(data, frames, t, status):
+            if self.stopping.is_set():  # the stream stops itself: stream.stop() (and abort() / close()) from
+                raise sd.CallbackStop   # another thread hang on macOS while Tk 9 runs on the main thread
+            self.blocks.put(data[:, 0].copy())
+
+        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32", callback=record,
+                                     finished_callback=self.stopped.set)
         self.writer = threading.Thread(target=self._write, daemon=True)
         self.writer.start()
         self.live = threading.Thread(target=self._transcribe_live, daemon=True)
@@ -205,12 +211,11 @@ class Talk:
     def words(self, out_dir):
         """Stop recording; return the transcript words [{start, end, word}] in seconds from the start, and
         save them as out_dir/words.json (the format of attention_insights/transcribe.py)."""
-        self.stream.stop()
-        self.stream.close()
+        self.stopping.set()      # the audio callback stops the stream, and the live transcription stops
+        self.stopped.wait(1.0)
         self.blocks.put(None)
         self.writer.join()
         self.file.close()
-        self.stopping.set()
         print(f"recorded {self.frames / RATE:.0f} s of talk", file=sys.stderr)
         if self.peak < 1e-3:
             print("WARNING: the microphone recorded only silence. On a Mac: System Settings > Privacy & "
@@ -287,9 +292,11 @@ def analyse(prof, words, lag):
     return res, (grid[ok], y[ok])
 
 
-def finish(feed, lag, out_dir, model, talk=None):
+def finish(feed, lag, out_dir, model, talk=None, explain=True):
     """End of the talk: print the ▲ / ▼ moments, let attention_insights write its report, and return what the
-    feedback card shows (None if there is too little attention data). With --record, transcribe first."""
+    feedback card shows (None if there is too little attention data). With --record, transcribe first.
+    explain=False: the LLM only names the topics (~2 s), it doesn't label and explain the high / low moments
+    (~20 s more), which only the card's list of moments shows."""
     ended = time.time() - talk.started if talk is not None else None
     if talk is not None:
         words = talk.words(out_dir)
@@ -319,7 +326,7 @@ def finish(feed, lag, out_dir, model, talk=None):
         print("(attention rescaled to 0..1 for the insights report)")
     print()
     out_dir = Path(out_dir)
-    lines = insights.write_report(out_dir, words, t, y, lag, model=model)
+    lines = insights.write_report(out_dir, words, t, y, lag, model=model, explain=explain)
     print("\n".join(lines[:lines.index("## All chunks")]))
     print(f"\nWrote {out_dir / 'report.md'}, {out_dir / 'timeline.png'}, {out_dir / 'insights.json'}")
     data = json.loads((out_dir / "insights.json").read_text())
@@ -373,6 +380,9 @@ def main(argv=None):
     p.add_argument("--no-sound", action="store_true", help="no chime when the feedback card appears")
     a = p.parse_args(argv)
     model = None if a.no_llm else a.model
+    if model:  # load the LLM now, like the speech model, so the topics take seconds when the talk ends
+        threading.Thread(target=insights.load_llm, args=(model,), daemon=True).start()
+    explain = not a.no_highlights  # the LLM's labels of the high / low moments only show in their list
 
     feed = Feed()
     if a.words:
@@ -402,10 +412,10 @@ def main(argv=None):
             run_terminal(feed, a.lag)
         except KeyboardInterrupt:  # UDP never ends by itself: Ctrl+C ends the talk
             pass
-        finish(feed, a.lag, a.out_dir, model, talk)
+        finish(feed, a.lag, a.out_dir, model, talk, explain)
     else:
         import presenter_ui
-        presenter_ui.run(feed, lambda: finish(feed, a.lag, a.out_dir, model, talk), sound=not a.no_sound,
+        presenter_ui.run(feed, lambda: finish(feed, a.lag, a.out_dir, model, talk, explain), sound=not a.no_sound,
                          highlights=not a.no_highlights)
 
 

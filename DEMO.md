@@ -23,8 +23,8 @@ Both computers: clone the repo, `git switch demo`, make the venv at the repo roo
 .venv/bin/pip install -r requirements.txt matplotlib faster-whisper soundfile sounddevice
 ```
 - Run the demo command below once with `--record`: it downloads the speech model (about 150 MB).
-- Optional, for topic names written by an LLM instead of keywords (the card then waits for the LLM, likely tens of seconds on
-  a laptop; not measured here):
+- Optional, for topic names written by an LLM instead of keywords (the model loads when the eye opens; the card
+  then waits about 2 s for the topics, plus about 20 s for the labels of the listed moments unless `--no-highlights`):
   `brew install ollama`, `ollama serve`, `ollama pull qwen2.5:3b` (about 2 GB).
 - The first time, macOS asks whether Terminal may use the microphone: allow it.
 
@@ -54,6 +54,8 @@ The talk counts from the **first score that arrives** to closing the eye: whatev
 computer starts sending (setting up, "can you hear me") is left out of the feedback, and the card starts at 0:00.
 
 Test without the camera: `.venv\Scripts\python.exe call\score_sender.py --to 172.20.10.3 --simulate` sends a made-up score.
+Or the presenter side alone on the Mac: `./demo_local.sh` (made-up score over localhost, the eye, your microphone,
+Ollama started if it isn't running; the card shows the graph with its topics).
 
 ## Options worth knowing
 
@@ -62,7 +64,7 @@ Test without the camera: `.venv\Scripts\python.exe call\score_sender.py --to 172
 | `score_sender.py --model models/attention_model_face_down.json` | another fitted model (default: Hampus's latest) |
 | `live_insights.py --whisper small.en` | better transcription, about 3x slower than `base.en` |
 | `live_insights.py --no-llm` | keyword topics, don't ask Ollama |
-| `live_insights.py --no-highlights` | the feedback card with the graph only |
+| `live_insights.py --no-highlights` | the feedback card with the graph and its topics only (and no long LLM call) |
 | `score_sender.py --mac` (with `sudo`) | camera on a Mac: colour only, infrared signals off |
 
 Every score is also saved on the camera computer in `call/scores/`, and the recording, transcript and

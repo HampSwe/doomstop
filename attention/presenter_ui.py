@@ -333,7 +333,7 @@ class Feedback:
         win.geometry(f"{cw}x{ch}+{self.start[0]}+{self.start[1]}")
         chime(sound)
         win.focus_force()  # so the arrow keys move the graph's marker
-        self.t0, self.phase = time.monotonic(), "in"
+        self.t0, self.phase, self.painted = time.monotonic(), "in", False
         win.after(16, self.tick)
 
     def graph(self, x0, y0, x1, y1, res, unit):
@@ -488,6 +488,12 @@ class Feedback:
 
     def tick(self):
         e = time.monotonic() - self.t0
+        if not self.painted and self.win.winfo_ismapped():  # Tk 9 on macOS leaves a new borderless window blank
+            self.painted = True                              # until it is resized: 1 px wider and back
+            w, h = self.rw.size
+            self.win.geometry(f"{w + 1}x{h}")
+            self.win.update_idletasks()
+            self.win.geometry(f"{w}x{h}")
         if self.phase == "out":
             alpha = max(0.0, 1 - (time.monotonic() - self.t_out) / 0.22)
             self.win.attributes("-alpha", alpha)
