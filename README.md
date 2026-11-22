@@ -88,6 +88,6 @@ A logistic regression turns the ten inputs into the attention score. The last tw
 - **Detecting doomscrolling.** While a person scrolls on their phone, the notification would have appeared in 7 of the 9 scrolling recordings (note that the recordings were short).
 - **Not disturbing work.** While a person works at the screen, with the phone away, on the desk or in the hand, the model reads 94 % of moments as attentive, and the notification would have appeared in 1 of those 9 recordings. Two-second glances at the phone never triggered it.
 
-**Robustness.** It does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76.
+**Robustness.** Note that the model does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76.
 
 Doomstop was created for the Lauzhack hackathon 2027 at EPFL for Logitech’s challenge.
