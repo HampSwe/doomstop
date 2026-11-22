@@ -107,12 +107,16 @@ def read_udp(feed, port, bind="127.0.0.1"):
             feed.add_line(line)
 
 
-RATE = 16000  # Whisper works at 16 kHz
+RATE = 16000     # Whisper works at 16 kHz
+LIVE_STEP_S = 8  # during the talk, transcribe each time this much new audio has come in
+TAIL_S = 2.0     # ... but leave the last bit for the next pass: a word may be cut off there
 
 
 class Talk:
-    """--record: this computer's microphone from the start of the talk, transcribed when it ends.
-    The Whisper model loads in the background meanwhile, so the transcription starts right away."""
+    """--record: this computer's microphone from the start of the talk, transcribed WHILE it is recorded.
+    Every LIVE_STEP_S seconds a background thread transcribes the new audio and keeps the sentences that have
+    ended, so when the talk ends only the last few seconds are left to do (base.en: ~1 s instead of ~8 s per
+    minute of talk). The Whisper model loads in the background at the start."""
 
     def __init__(self, wav, whisper):
         import sounddevice as sd
@@ -123,11 +127,16 @@ class Talk:
         self.model, self.model_error = None, None
         threading.Thread(target=self._load, daemon=True).start()
         self.blocks, self.frames, self.peak = queue.Queue(), 0, 0.0
+        self.audio, self.audio_lock = [], threading.Lock()   # every block so far, for the live transcription
+        self.segments, self.done_upto = [], 0                # transcribed segments; samples transcribed so far
+        self.stopping = threading.Event()
         self.file = sf.SoundFile(self.wav, mode="w", samplerate=RATE, channels=1, subtype="PCM_16")
         self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
-                                     callback=lambda data, n, t, status: self.blocks.put(data.copy()))
+                                     callback=lambda data, n, t, status: self.blocks.put(data[:, 0].copy()))
         self.writer = threading.Thread(target=self._write, daemon=True)
         self.writer.start()
+        self.live = threading.Thread(target=self._transcribe_live, daemon=True)
+        self.live.start()
         self.stream.start()
         self.started = time.time()  # t = 0 of the recording, and of the attention samples
         print(f"recording the talk from '{sd.query_devices(kind='input')['name']}' into {self.wav}", file=sys.stderr)
@@ -145,19 +154,63 @@ class Talk:
     def _write(self):
         while (block := self.blocks.get()) is not None:
             self.file.write(block)
-            self.frames += len(block)
+            with self.audio_lock:
+                self.audio.append(block)
+                self.frames += len(block)
             self.peak = max(self.peak, float(np.abs(block).max()))
+
+    def _pass(self, final):
+        """Transcribe the audio not transcribed yet. Unless final, keep only the segments that end more than
+        TAIL_S before the end of the audio; the rest is done again next time, with what follows it."""
+        with self.audio_lock:
+            if self.audio:
+                self.audio = [np.concatenate(self.audio)]
+            audio = self.audio[0][self.done_upto:] if self.audio else np.zeros(0, np.float32)
+        offset, length = self.done_upto / RATE, len(audio) / RATE
+        if length < 0.5:
+            return
+        segments, _ = self.model.transcribe(audio, word_timestamps=True, vad_filter=True,
+                                            condition_on_previous_text=False)
+        keep_until = length if final else length - TAIL_S
+        kept_end, heard = None, False
+        for seg in segments:
+            heard = True
+            if seg.end > keep_until:
+                if kept_end is not None:  # resume in the pause before this sentence: word end stamps run early,
+                    kept_end = min(max(kept_end, (kept_end + seg.start) / 2), kept_end + 0.5)  # a cut at one
+                break                                                     # would repeat the word's tail next time
+            ws = [{"start": round(offset + w.start, 2), "end": round(offset + w.end, 2), "word": w.word.strip()}
+                  for w in (seg.words or []) if w.word.strip()]
+            self.segments.append({"start": round(offset + seg.start, 2), "end": round(offset + seg.end, 2),
+                                  "text": seg.text.strip(), "words": ws})
+            kept_end = seg.end
+        if final:
+            kept_end = length
+        elif kept_end is None and length > 4 * LIVE_STEP_S:  # one long run-on sentence: take it as it is
+            return self._pass(final=True)
+        elif kept_end is None:  # no speech: skip it (not the tail); a sentence still going: wait for its end
+            kept_end = 0.0 if heard else max(0.0, length - TAIL_S)
+        self.done_upto += int(kept_end * RATE)
+
+    def _transcribe_live(self):
+        while not self.stopping.is_set():
+            if self.model is not None and self.frames - self.done_upto >= LIVE_STEP_S * RATE:
+                try:
+                    self._pass(final=False)
+                except Exception as e:  # noqa: BLE001 - whatever is left gets transcribed at the end
+                    print(f"WARNING: live transcription failed ({e}); transcribing at the end", file=sys.stderr)
+                    return
+            self.stopping.wait(0.5)
 
     def words(self, out_dir):
         """Stop recording; return the transcript words [{start, end, word}] in seconds from the start, and
         save them as out_dir/words.json (the format of attention_insights/transcribe.py)."""
-        import soundfile as sf
-
         self.stream.stop()
         self.stream.close()
         self.blocks.put(None)
         self.writer.join()
         self.file.close()
+        self.stopping.set()
         print(f"recorded {self.frames / RATE:.0f} s of talk", file=sys.stderr)
         if self.peak < 1e-3:
             print("WARNING: the microphone recorded only silence. On a Mac: System Settings > Privacy & "
@@ -167,20 +220,15 @@ class Talk:
             time.sleep(0.2)
         if self.model is None:
             return []
-        t = time.time()
-        audio, _ = sf.read(self.wav, dtype="float32")
-        segments, info = self.model.transcribe(audio, word_timestamps=True, vad_filter=True)
-        out = []
-        for seg in segments:
-            ws = [{"start": round(w.start, 2), "end": round(w.end, 2), "word": w.word.strip()}
-                  for w in (seg.words or []) if w.word.strip()]
-            out.append({"start": round(seg.start, 2), "end": round(seg.end, 2), "text": seg.text.strip(),
-                        "words": ws})
-        words = [w for seg in out for w in seg["words"]]
+        self.live.join()  # let a pass that is running finish
+        t, left = time.time(), (self.frames - self.done_upto) / RATE
+        self._pass(final=True)
+        words = [w for seg in self.segments for w in seg["words"]]
         Path(out_dir).mkdir(parents=True, exist_ok=True)
-        (Path(out_dir) / "words.json").write_text(json.dumps({"duration": round(info.duration, 2),
-                                                              "segments": out}, indent=1))
-        print(f"transcribed: {len(words)} words in {time.time() - t:.0f} s", file=sys.stderr)
+        (Path(out_dir) / "words.json").write_text(json.dumps({"duration": round(self.frames / RATE, 2),
+                                                              "segments": self.segments}, indent=1))
+        print(f"transcribed: {len(words)} words; the last {left:.0f} s took {time.time() - t:.1f} s",
+              file=sys.stderr)
         return words
 
 
@@ -209,6 +257,21 @@ def snapshot(feed):
     return prof, words
 
 
+def talk_on_clock(prof, words, ended, lag):
+    """With --record the recording starts with the eye, often before the camera computer sends anything.
+    Keep what lies between the first score and `ended` (closing the eye), and count time from that first
+    score, so the feedback starts at 0:00 and the setup talk before it is not part of it. In place."""
+    t0 = prof.t[0]
+    keep = [i for i, t in enumerate(prof.t) if t <= ended]
+    prof.t = [prof.t[i] - t0 for i in keep]
+    prof.s = [prof.s[i] for i in keep]
+    prof.markers = [(m - t0, name) for m, name in prof.markers if t0 <= m <= ended]
+    words[:] = [dict(w, start=round(w["start"] - t0, 2), end=round(w["end"] - t0, 2)) for w in words
+                if t0 <= w["start"] <= ended]
+    if t0 > 1:
+        print(f"the talk: from the first attention score, {t0:.0f} s into the recording", file=sys.stderr)
+
+
 def analyse(prof, words, lag):
     """Attention profile of the data so far, with what was said at each ▲ / ▼ moment.
     Returns (profile result, (t, attention) on an even grid without gaps)."""
@@ -227,6 +290,7 @@ def analyse(prof, words, lag):
 def finish(feed, lag, out_dir, model, talk=None):
     """End of the talk: print the ▲ / ▼ moments, let attention_insights write its report, and return what the
     feedback card shows (None if there is too little attention data). With --record, transcribe first."""
+    ended = time.time() - talk.started if talk is not None else None
     if talk is not None:
         words = talk.words(out_dir)
         with feed.lock:
@@ -235,6 +299,8 @@ def finish(feed, lag, out_dir, model, talk=None):
     if len(prof) < 5:
         print("not enough attention data for feedback", file=sys.stderr)
         return None
+    if talk is not None:  # the talk is from the first score to closing the eye: drop the setup before it
+        talk_on_clock(prof, words, ended, lag)
     res, (t, y) = analyse(prof, words, lag)
     print(f"\n=== Live insights ({hms(t[-1] - t[0])} of attention, {len(words)} words) ===")
     for key, title in (("peaks", "Highest attention"), ("dips", "Lowest attention")):

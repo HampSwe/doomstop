@@ -23,7 +23,8 @@ Both computers: clone the repo, `git switch demo`, make the venv at the repo roo
 .venv/bin/pip install -r requirements.txt matplotlib faster-whisper soundfile sounddevice
 ```
 - Run the demo command below once with `--record`: it downloads the speech model (about 150 MB).
-- Optional, for topic names written by an LLM instead of keywords:
+- Optional, for topic names written by an LLM instead of keywords (the card then waits for the LLM, likely tens of seconds on
+  a laptop; not measured here):
   `brew install ollama`, `ollama serve`, `ollama pull qwen2.5:3b` (about 2 GB).
 - The first time, macOS asks whether Terminal may use the microphone: allow it.
 
@@ -45,9 +46,12 @@ Both computers: clone the repo, `git switch demo`, make the venv at the repo roo
    The person in front of the camera looks at the screen for the first second (it measures their normal pose).
 4. Give the talk. The eye turns from red to green with the audience's attention; it says **no signal** if the
    scores stop for 3 s (it carries on by itself when they come back).
-5. **End of the talk: close the eye** (its × box, or Esc). It says "analysing", transcribes the talk (about
-   5 s per minute of talk with `base.en`, tested on this Mac), and shows the feedback card: the attention over the talk, the moments that got
-   and lost attention with their topic and what was said, and OPEN REPORT for the full report.
+5. **End of the talk: close the eye** (its × box, or Esc). The talk is transcribed while you speak, so the
+   feedback card comes up in about a second: the attention over the talk, the moments that got and lost
+   attention with their topic and what was said, and OPEN REPORT for the full report.
+
+The talk counts from the **first score that arrives** to closing the eye: whatever is said before the camera
+computer starts sending (setting up, "can you hear me") is left out of the feedback, and the card starts at 0:00.
 
 Test without the camera: `.venv\Scripts\python.exe call\score_sender.py --to 172.20.10.3 --simulate` sends a made-up score.
 
