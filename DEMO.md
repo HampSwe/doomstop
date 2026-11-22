@@ -44,6 +44,8 @@ Both computers: clone the repo, `git switch demo`, make the venv at the repo roo
    .venv\Scripts\python.exe call\score_sender.py --to 172.20.10.3
    ```
    The person in front of the camera looks at the screen for the first second (it measures their normal pose).
+   It then prints `DONE. PRESS ENTER TO START` and sends nothing until Enter is pressed: press it when the
+   talk begins (`--no-wait` starts at once).
 4. Give the talk. The eye turns from red to green with the audience's attention; it says **no signal** if the
    scores stop for 3 s (it carries on by itself when they come back).
 5. **End of the talk: close the eye** (its × box, or Esc). The talk is transcribed while you speak, so the
@@ -60,6 +62,7 @@ Test without the camera: `.venv\Scripts\python.exe call\score_sender.py --to 172
 | | |
 |---|---|
 | `score_sender.py --model models/attention_model_face_down.json` | another fitted model (default: Hampus's latest) |
+| `score_sender.py --dashboard --popup` | on the camera computer: also show the dashboard, and pop up the DOOMSCROLL DETECTED card with its voice |
 | `live_insights.py --whisper small.en` | better transcription, about 3x slower than `base.en` |
 | `live_insights.py --no-llm` | keyword topics, don't ask Ollama |
 | `live_insights.py --no-highlights` | the feedback card with the graph only |

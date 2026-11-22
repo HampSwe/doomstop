@@ -4,10 +4,20 @@ Camera machine (the audience, with the LogiInsight):
     python call/score_sender.py --to 172.20.10.3                         # Windows / Linux: colour + infrared
     sudo .venv/bin/python call/score_sender.py --to 172.20.10.3 --mac    # Mac: colour only (see mac/README.md)
     python call/score_sender.py --to 172.20.10.3 --simulate              # no camera: a made-up score, for tests
+    python call/score_sender.py --to 172.20.10.3 --dashboard --popup     # also show the dashboard here, and
+                                                                         # pop up the card when you doomscroll
 
 Presenter Mac (start it whenever, before or after the sender; see DEMO.md):
     .venv/bin/python attention/live_insights.py --udp 8767 --bind 0.0.0.0 --record   # the LED eye + feedback
     .venv/bin/python attention/live_view.py --udp 8767 --bind 0.0.0.0 --short       # or: a plain live graph
+
+When the camera is open and the normal pose is measured it prints
+
+    DONE. PRESS ENTER TO START
+
+and waits: nothing is sent or logged until Enter is pressed (--no-wait starts at
+once). The presenter's feedback counts the talk from the first score that
+arrives, so Enter is the start of the talk.
 
 The score is computed exactly as dashboard.py computes it: the engine's
 signals go into attention.History, and the model (models/attention_model.json,
@@ -22,6 +32,13 @@ arrive again. If the camera stops, the sender reopens it every few seconds.
 Every score is also written to call/scores/scores_<time>.csv here, which
 attention/attention_profile.py can read afterwards.
 
+--dashboard shows dashboard.py's window on this computer while it sends: both
+streams, the attention score and the signals, with the sending status in the
+bottom line. --popup adds focus.py's card ("DOOMSCROLL DETECTED", with its
+voice) whenever the attention stays low. One program does all of it, because
+only one program can hold the camera.
+
+Keys in the --dashboard window: c measures the normal pose again, q or Esc quits.
 Keys in the --preview window: q or Esc quits.
 """
 
@@ -30,6 +47,7 @@ import csv
 import random
 import socket
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -41,9 +59,12 @@ PORT = 8767
 REOPEN_S = 3.0
 
 
-def camera_scores(args):
+def camera_scores(args, on_step=None):
     """(time, attention, colour frame) for every camera frame, as dashboard.py computes it.
-    Reopens the camera whenever it stops, instead of ending."""
+    Reopens the camera whenever it stops, instead of ending.
+
+    `on_step(engine, step, attention, ready)` is called for every camera step, also while the
+    normal pose is still being measured (ready False): the --dashboard window is drawn there."""
     import engine
     from attention import History, Model
 
@@ -72,7 +93,15 @@ def camera_scores(args):
                     yield None
                     continue
                 history.add(step.now, step.values)
-                yield step.now, float(model.predict(history.features(step.now))), step.frame
+                attention = float(model.predict(history.features(step.now)))
+                det = getattr(eng, "det", None)
+                ready = det is None or not (det.calibrating or det.base is None)
+                if on_step:
+                    on_step(eng, step, attention, ready)
+                if not ready:
+                    yield None                            # still measuring the normal pose: not ready yet
+                    continue
+                yield step.now, attention, step.frame
         except engine.EngineError as e:
             print(f"camera stopped ({e}); reopening in {REOPEN_S:.0f} s", flush=True)
         finally:
@@ -125,6 +154,12 @@ def main():
     p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--phone-score", type=float, default=0.35, help="phone confidence threshold (default 0.35)")
     p.add_argument("--preview", action="store_true", help="show a small window with the score being sent")
+    p.add_argument("--no-wait", action="store_true", help="start sending at once, without waiting for Enter")
+    p.add_argument("--dashboard", action="store_true",
+                   help="show dashboard.py's window here too: both streams, the attention score, the signals")
+    p.add_argument("--popup", action="store_true",
+                   help="pop up focus.py's DOOMSCROLL DETECTED card, with its voice, when the attention stays low")
+    p.add_argument("--no-popup-sound", action="store_true", help="with --popup: no voice")
     args = p.parse_args()
 
     import cv2
@@ -135,20 +170,64 @@ def main():
     log_dir = ROOT / "call" / "scores"
     log_dir.mkdir(parents=True, exist_ok=True)
     log_path = log_dir / f"scores_{datetime.now():%Y%m%d_%H%M%S}.csv"
-    source = simulated_scores(args) if args.simulate else camera_scores(args)
+    quit_asked = []                            # filled when q or Esc is pressed in the dashboard window
+    nudger = None
+    if args.popup:
+        from nudge import Nudger
+        nudger = Nudger(sound=not args.no_popup_sound)
+        print(f"pop-ups on: a card when attention stays below {nudger.below:g} for {nudger.after_s:g} s, "
+              f"at most one every {nudger.cooldown_s:g} s", flush=True)
+
+    def show_dashboard(eng, step, attention, ready):
+        """dashboard.py's window for this step, with what the sender is doing in the bottom line."""
+        if not ready:
+            footer, colour = "measuring your normal pose: look at the screen", dashboard.YELLOW
+        elif not go.is_set():
+            footer, colour = "READY: press ENTER in the terminal to start sending", dashboard.YELLOW
+        else:
+            footer, colour = f"sending to {dest[0]}: {sent} scores sent", dashboard.GREEN
+        footer += "      c: screen pose   q: quit" + (f"      pop-ups on ({nudger.shown} shown)" if nudger else "")
+        cv2.imshow("score_sender: dashboard", dashboard.render(eng, step, attention, footer, colour,
+                                                               phone_score=args.phone_score))
+        key = cv2.waitKey(1) & 0xFF
+        if key in (ord("q"), 27):
+            quit_asked.append(True)
+        elif key == ord("c"):
+            eng.det.calibrate("screen")
+
+    on_step = None
+    if args.dashboard and not args.simulate:
+        import dashboard
+        on_step = show_dashboard
+    source = simulated_scores(args) if args.simulate else camera_scores(args, on_step)
     kind = "SIMULATED score" if args.simulate else "attention score"
-    print(f"sending the {kind} to {dest[0]}:{dest[1]}, {args.rate:g} a second; also logging to {log_path}",
+    print(f"the {kind} goes to {dest[0]}:{dest[1]}, {args.rate:g} a second; also logged to {log_path}",
           flush=True)
 
     interval, last_sent, last_status, sent, failing, score = 1 / args.rate, 0.0, time.time(), 0, False, None
+    go, asked = threading.Event(), False       # nothing is sent until Enter is pressed (or --no-wait)
+
+    def wait_for_enter():
+        sys.stdin.readline()                   # returns on Enter, and at once when there is no keyboard
+        print("started", flush=True)
+        go.set()
     with open(log_path, "w", newline="") as f:
         log = csv.writer(f)
         log.writerow(["time", "attention"])
         try:
             for item in source:
+                if item is not None and not asked:            # the first score: everything is initialised
+                    asked = True
+                    if args.no_wait:
+                        go.set()
+                    else:
+                        print("\nDONE. PRESS ENTER TO START", flush=True)
+                        threading.Thread(target=wait_for_enter, daemon=True).start()
                 if item is not None:
                     now, score, frame = item
-                    if now - last_sent >= 0.9 * interval:     # 0.9: a score due exactly on time still goes
+                    if nudger and nudger.update(now, score):
+                        print(f"  pop-up {nudger.shown}: attention {score:.2f}", flush=True)
+                    if go.is_set() and now - last_sent >= 0.9 * interval:   # 0.9: a score due exactly on time still goes
                         last_sent = now
                         stamp = datetime.fromtimestamp(now).isoformat(timespec="milliseconds")
                         try:
@@ -163,22 +242,27 @@ def main():
                                 failing = True
                         log.writerow([stamp, f"{score:.4f}"])
                         f.flush()
-                    if args.preview:
+                    if args.preview and not on_step:
                         view = frame.copy() if frame is not None else np.full((120, 420, 3), 30, np.uint8)
                         h, w = view.shape[:2]
                         cv2.rectangle(view, (0, h - 36), (int(w * score), h), (80, 200, 80) if score >= 0.5
                                       else (60, 60, 230), -1)
-                        cv2.putText(view, f"sending {score:.2f}", (10, h - 10), cv2.FONT_HERSHEY_SIMPLEX, 0.8,
+                        cv2.putText(view, f"{'sending' if go.is_set() else 'ready:'} {score:.2f}", (10, h - 10),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.8,
                                     (255, 255, 255), 2)
                         cv2.imshow("score_sender (q: quit)", view)
-                if args.preview and cv2.waitKey(1) & 0xFF in (ord("q"), 27):
+                if quit_asked or (args.preview and not on_step and cv2.waitKey(1) & 0xFF in (ord("q"), 27)):
                     break
-                if time.time() - last_status >= 5:
+                if time.time() - last_status >= 5 and (go.is_set() or not asked):
                     last_status = time.time()
                     print(f"  sent {sent} scores, now {score:.2f}" if score is not None else "  waiting for the camera",
                           flush=True)
         except KeyboardInterrupt:
             pass
+        finally:
+            if nudger:
+                nudger.close()
+            cv2.destroyAllWindows()
     print(f"sent {sent} scores; log: {log_path}")
 
 

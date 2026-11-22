@@ -10,6 +10,7 @@ model has been fitted the row says so.
     python dashboard.py --face        # also show face_down and face_down_score
     python dashboard.py --binary-gaze # also show gaze_down (0 or 1)
     python dashboard.py --model models/attention_model_face_down.json   # another fitted model
+    python dashboard.py --popup       # also pop up a friendly card when you doomscroll (this is focus.py)
 
 Signals (scores are 0..1; the white tick on a bar is where it counts as "on"):
 
@@ -46,6 +47,7 @@ import numpy as np
 from attention import MODEL_PATH, History, Model
 from engine import Engine, EngineError
 from hand_detect import IN_HAND_ON, draw_hands
+from nudge import AFTER_S, BELOW, COOLDOWN_S, Nudger
 from look_down import AI_WARN_S, GREEN, GREY, RED, WHITE, YELLOW, draw_face, draw_phones, put, put_centred
 from phone_detect import enhance_grey
 
@@ -144,8 +146,28 @@ def compose(colour, infrared, values, thresholds, footer, footer_colour, attenti
     return canvas
 
 
-def main():
-    p = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+def signal_thresholds(phone_score=0.35):
+    """Where each score counts as "on": the white tick on its bar."""
+    return {"face_down_score": 0.5, "gaze_down_score": 0.5, "color_phone": phone_score, "phone": phone_score,
+            "phone_in_hand": IN_HAND_ON, "gaze_down_x_phone_in_hand": IN_HAND_ON}
+
+
+def render(engine, step, attention, footer, footer_colour=GREY, hidden=None, phone_score=0.35, mirror=True):
+    """The whole window for one camera step (also used by call/score_sender.py --dashboard).
+
+    `hidden`: signal names to leave out of the list; None leaves out the HIDDEN ones.
+    """
+    if hidden is None:
+        hidden = {name for names in HIDDEN.values() for name in names}
+    values = {name: v for name, v in step.values.items() if name not in hidden}
+    return compose(
+        colour_view(step.frame, engine.face(step.now), engine.worker.phones["rgb"], engine.det, mirror),
+        infrared_view(step.ir_frame, engine.worker, mirror),
+        values, signal_thresholds(phone_score), footer, footer_colour, attention)
+
+
+def main(doc=None):
+    p = argparse.ArgumentParser(description=(doc or __doc__).splitlines()[0])
     p.add_argument("--device", type=int, help="colour camera index (default: find the LogiInsight camera)")
     p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--face", action="store_true", help="also show face_down and face_down_score")
@@ -155,6 +177,16 @@ def main():
                    help="confidence at which a phone counts as seen (default 0.35)")
     p.add_argument("--no-mirror", action="store_true", help="do not mirror the pictures")
     p.add_argument("--frames", type=int, default=0, help="stop after N frames (0 = run until quit)")
+    p.add_argument("--popup", action="store_true", help="pop up a friendly card when the attention score stays low")
+    p.add_argument("--popup-below", type=float, default=BELOW,
+                   help="attention below this counts as scrolling (default %(default)s)")
+    p.add_argument("--popup-after", type=float, default=AFTER_S,
+                   help="seconds it has to stay below before the card appears (default %(default)s)")
+    p.add_argument("--popup-cooldown", type=float, default=COOLDOWN_S,
+                   help="seconds from one card to the next (default %(default)s)")
+    p.add_argument("--popup-position", choices=["top-right", "center"], default="top-right",
+                   help="where the card appears (default %(default)s)")
+    p.add_argument("--no-popup-sound", action="store_true", help="no sound with the card")
     args = p.parse_args()
 
     try:
@@ -170,8 +202,14 @@ def main():
         print(f"No attention model at {args.model}: record people with collect.py, then run train.py.")
     else:
         print(f"Attention model {Path(args.model).name}: {', '.join(model.signals)}")
-    thresholds = {"face_down_score": 0.5, "gaze_down_score": 0.5, "color_phone": args.phone_score,
-                  "phone": args.phone_score, "phone_in_hand": IN_HAND_ON, "gaze_down_x_phone_in_hand": IN_HAND_ON}
+    nudger = None
+    if args.popup and model is None:
+        print("No pop-ups: they need the attention score, and there is no model.")
+    elif args.popup:
+        nudger = Nudger(args.popup_below, args.popup_after, args.popup_cooldown,
+                        position=args.popup_position, sound=not args.no_popup_sound)
+        print(f"Pop-ups on: a card when attention stays below {args.popup_below:g} for {args.popup_after:g} s, "
+              f"at most one every {args.popup_cooldown:g} s.")
     hidden = {name for option, names in HIDDEN.items() if not getattr(args, option) for name in names}
     n_frames = 0
     message, message_t = "", 0.0
@@ -186,8 +224,9 @@ def main():
             n_frames += 1
             history.add(now, step.values)
             attention = float(model.predict(history.features(now))) if model else None
+            if nudger and nudger.update(now, attention):
+                print(f"  pop-up {nudger.shown}: attention {attention:.2f}", flush=True)
 
-            values = {name: v for name, v in step.values.items() if name not in hidden}
             if det.message != message:                # a new note from the detector: show it for a while
                 message, message_t = det.message, now
             if now - engine.started > AI_WARN_S:
@@ -197,11 +236,10 @@ def main():
                 footer, colour = det.message, YELLOW
             else:
                 footer, colour = "c: screen pose   d: down pose   r: reset   q: quit", GREY
-            canvas = compose(
-                colour_view(step.frame, engine.face(now), engine.worker.phones["rgb"], det, not args.no_mirror),
-                infrared_view(step.ir_frame, engine.worker, not args.no_mirror),
-                values, thresholds, footer, colour, attention)
-            cv2.imshow(WINDOW, canvas)
+                if nudger:
+                    footer += f"      pop-ups on ({nudger.shown} shown)"
+            cv2.imshow(WINDOW, render(engine, step, attention, footer, colour, hidden, args.phone_score,
+                                      not args.no_mirror))
             key = cv2.waitKey(1) & 0xFF
             if key in (ord("q"), 27):
                 break
@@ -214,9 +252,12 @@ def main():
     except KeyboardInterrupt:
         pass
     finally:
+        if nudger:
+            nudger.close()
         engine.close()
         cv2.destroyAllWindows()
-    print(f"{n_frames} frames, {engine.feed.n_mesh} face-mesh results")
+    print(f"{n_frames} frames, {engine.feed.n_mesh} face-mesh results"
+          + (f", {nudger.shown} pop-ups" if nudger else ""))
 
 
 if __name__ == "__main__":
