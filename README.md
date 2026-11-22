@@ -28,6 +28,45 @@ When the talk is over, Doomstop shows a feedback card: the attention over the wh
 
 <br>
 
+## Setup
+
+Doomstop requires the Logitech LogiInsight camera. Connect it by USB to a Windows computer and set up its network link and login as described in [`logiinsight_api/README.md`](logiinsight_api/README.md): the camera’s user name and password go in the environment variables `LOGIWEBCAM_USER` and `LOGIWEBCAM_PASSWORD`. Then install the Python packages:
+
+```
+pip install -r requirements.txt
+```
+
+### Productivity tool
+
+```
+python focus.py
+```
+
+This opens the dashboard, with both camera pictures, the attention score and the signals, and shows the DOOMSCROLL DETECTED notification when you start scrolling. Look at the screen for the first second, while your normal pose is measured. Press `q` in the dashboard to quit.
+
+`python dashboard.py` shows the same dashboard without the notification.
+
+### Student
+
+On the computer with the camera, with the teacher’s address in place of `172.20.10.3`:
+
+```
+python call/score_sender.py --to 172.20.10.3 --no-wait --dashboard --popup
+```
+
+This sends the attention score to the teacher. `--dashboard` and `--popup` are optional: they also show the dashboard and the notification on the student’s own screen. Both computers must be on the same network.
+
+### Teacher
+
+Start the teacher’s side first: it prints the address that the student’s command needs. It needs a few more packages:
+
+```
+pip install matplotlib faster-whisper soundfile sounddevice
+python attention/live_insights.py --udp 8767 --bind 0.0.0.0 --record
+```
+
+The LED eye appears and the microphone is recorded. When the talk is over, close the eye to get the feedback card. For topics written by the LLM, [Ollama](https://ollama.com) must be running with the model `qwen2.5:3b`; without it, the topics are plain keywords. The teacher’s side was built and tested on a Mac. [`DEMO.md`](DEMO.md) has the details.
+
 ## Technical details
 
 **Features.** The model reads five signals, each between 0 and 1:
