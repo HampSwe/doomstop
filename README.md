@@ -14,7 +14,7 @@ When it detects doomscrolling, this notification appears on the screen and a voi
 
 ## Audience attention data
 
-In an online lecture or meeting, the computer in front of the audience runs the detector and sends only the attention score to the presenter: a number between 0 and 1, ten times a second. No video and no pictures leave the audience’s computer.
+In an online lecture or meeting, the computer in front of the audience runs the detector and sends only the attention score to the presenter. No video and no pictures leave the audience’s computer.
 
 During the talk, the presenter sees a small LED eye in the corner of the screen. It turns from red to green as the audience’s attention rises, so there are no numbers to read while speaking.
 
