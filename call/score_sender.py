@@ -5,12 +5,14 @@ Camera machine (the audience, with the LogiInsight):
     sudo .venv/bin/python call/score_sender.py --to 172.20.10.3 --mac    # Mac: colour only (see mac/README.md)
     python call/score_sender.py --to 172.20.10.3 --simulate              # no camera: a made-up score, for tests
 
-Presenter Mac (start it whenever, before or after the sender):
-    .venv/bin/python attention/live_view.py --udp 8767 --bind 0.0.0.0 --short
+Presenter Mac (start it whenever, before or after the sender; see DEMO.md):
+    .venv/bin/python attention/live_insights.py --udp 8767 --bind 0.0.0.0 --record   # the LED eye + feedback
+    .venv/bin/python attention/live_view.py --udp 8767 --bind 0.0.0.0 --short       # or: a plain live graph
 
 The score is computed exactly as dashboard.py computes it: the engine's
-signals go into attention.History, and the model in models/attention_model.json
-turns their 2 s and 6 s averages into attention (0 = distracted, 1 = attentive).
+signals go into attention.History, and the model (models/attention_model.json,
+or --model) turns their averages into attention (0 = distracted, 1 =
+attentive). Each model brings its own list of signals and windows.
 
 Every score goes to the presenter as one UDP datagram, "ISO time,score", which
 is the line format attention/live_view.py reads, at most --rate a second. UDP
@@ -49,9 +51,11 @@ def camera_scores(args):
         from mac.engine_mac import MacEngine as Engine
     else:
         Engine = engine.Engine
-    model = Model.load()
+    model = Model.load(args.model) if args.model else Model.load()
     if model is None:
-        sys.exit("No attention model in models/attention_model.json: record with collect.py, then run train.py.")
+        sys.exit(f"No attention model at {args.model or 'models/attention_model.json'}: "
+                 "record with collect.py, then run train.py.")
+    print(f"model: {args.model or 'models/attention_model.json'}, signals {', '.join(model.signals)}", flush=True)
     while True:
         try:
             eng = Engine(args.device, args.ir_device, args.phone_score)
@@ -60,7 +64,7 @@ def camera_scores(args):
             time.sleep(REOPEN_S)
             continue
         print("Camera open. Look at the screen for a second while it measures your normal pose.", flush=True)
-        history = History(model.windows)
+        history = History(model.windows, model.signals)   # the signals this model was fitted on
         try:
             while True:
                 step = eng.step()
@@ -111,6 +115,8 @@ def main():
     p.add_argument("--to", required=True, help="the presenter Mac's address, e.g. 172.20.10.3")
     p.add_argument("--port", type=int, default=PORT, help=f"live_view.py's --udp port (default {PORT})")
     p.add_argument("--rate", type=float, default=10, help="scores sent per second, at most (default 10)")
+    p.add_argument("--model", help="another fitted model, e.g. models/attention_model_face_down.json "
+                                   "(default: models/attention_model.json, Hampus's latest)")
     p.add_argument("--mac", action="store_true", help="camera machine is a Mac: colour only, run with sudo")
     p.add_argument("--simulate", action="store_true", help="no camera: send a made-up score")
     p.add_argument("--speed", type=float, default=1, help="with --simulate: times faster than real time")

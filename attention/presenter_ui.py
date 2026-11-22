@@ -254,18 +254,53 @@ def topic_at(spans, t, reach=3.0):
     return best
 
 
+def highlights(result, n=2):
+    """The talk's highest and lowest attention moments for the card: [(kind, t, label, quote)], kind "high" or
+    "low", t in attention time, at most n of each. From attention_insights' episodes (their topic label and
+    what was said) when there is a transcript; otherwise the highest ▲ / lowest ▼ moment of the attention
+    profile (or simply its max / min) with the topic there, if any."""
+    res, lag, spans = result["res"], result["lag"], topic_spans(result)
+    out = []
+    for kind, key in (("high", "peaks"), ("low", "dips")):
+        eps = sorted((e for e in result.get("episodes", []) if e.get("kind") == kind),
+                     key=lambda e: -abs(e.get("z", 0.0)))[:n]
+        for e in eps:
+            t = (e["start"] + e["end"]) / 2 + lag  # spoken at t - lag, seen in the attention at t
+            label = e.get("label") or ", ".join(e.get("keywords", [])[:3]) or topic_at(spans, t) or ""
+            out.append((kind, t, label, e.get("text", "")))
+        if eps:
+            continue
+        if res[key]:
+            ev = res[key][0]
+            t, quote = ev["time"], ev.get("said", "")
+        else:  # nothing stands out: the max / min of the smoothed attention
+            pts = [(tv, v) for tv, v in zip(res["profile"]["t"], res["profile"]["smoothed"]) if v == v]
+            if not pts:
+                continue
+            t, quote = (max if kind == "high" else min)(pts, key=lambda p: p[1])[0], ""
+        out.append((kind, t, topic_at(spans, t) or "", quote))
+    return out
+
+
+def shorten(text, limit=90):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[:limit].rsplit(" ", 1)[0] + " …"
+
+
 class Feedback:
     """The card after the talk: the attention over the whole talk. Hovering over the graph shows the topic at
-    that moment. result: res (attention profile), chunks (transcript chunks with topics), report (path or None),
-    n_words, lag."""
+    that moment. With show_highlights, the highest and lowest moments are marked on the graph and listed under
+    it with their topic and what was said there. result: res (attention profile), chunks (transcript chunks
+    with topics), episodes (attention_insights' high / low stretches), report (path or None), n_words, lag."""
     W, PAD, HEADER, GRAPH_H = 720, 24, 34, 280
 
-    def __init__(self, win, result, on_close, sound=True):
+    def __init__(self, win, result, on_close, sound=True, show_highlights=True):
         self.win, self.on_close = win, on_close
         self.rw = rw = RetroWindow(win, self.W, "PRESENTATION FEEDBACK", self.HEADER, 7, self.leave)
         c, W, PAD = rw.c, self.W, self.PAD
         res = result["res"]
         self.spans = topic_spans(result)
+        self.hl = highlights(result) if show_highlights else []
 
         y = self.HEADER + PAD - 6
         c.create_text(PAD, y, anchor="nw", text="How the room felt", font=font("display", 22, "bold"), fill=INK)
@@ -278,6 +313,8 @@ class Feedback:
         y = c.bbox(c.create_text(PAD, y + 34, anchor="nw", text="  ·  ".join(bits),
                                  font=font("typewriter", 12), fill=TEXT2))[3] + 14
         y = self.graph(PAD, y, W - PAD, y + self.GRAPH_H, res, unit)
+        if self.hl:
+            y = self.highlight_rows(PAD, y + 10, W - PAD)
 
         y += 14  # buttons, right-aligned
         f = font("display", 12, "bold")
@@ -353,8 +390,51 @@ class Feedback:
         step = max(1, len(self.points) // 80)
         self.win.bind("<Left>", lambda _e: self.pin(self.pinned - step))
         self.win.bind("<Right>", lambda _e: self.pin(self.pinned + step))
+        self.hl_index = []
+        n = {"high": 0, "low": 0}
+        for kind, tv, _label, _quote in self.hl:  # ▲ above the curve at a high, ▼ below it at a low
+            if not self.points:
+                break
+            i = min(range(len(self.points)), key=lambda k: abs(self.points[k][2] - tv))
+            self.hl_index.append(i)
+            n[kind] += 1
+            x, y = self.points[i][:2]
+            colour, s = (TEAL, -1) if kind == "high" else (RUST, 1)
+            tip = y + s * 9
+            c.create_polygon(x, tip, x - 7, tip + s * 12, x + 7, tip + s * 12, fill=colour, outline=INK, width=1.5)
+            c.create_text(x, tip + s * 20, text=str(n[kind]), font=font("display", 10, "bold"), fill=colour)
         self.mark(self.pinned)
         return y1 + 22
+
+    def highlight_rows(self, x0, y0, x1):
+        """Two columns under the graph, GOT ATTENTION (highs) and LOST ATTENTION (lows): for each moment its
+        number on the graph, time, topic and what was said. Clicking one moves the graph's marker there.
+        Returns the y below them."""
+        c, gap = self.rw.c, 24
+        colw = (x1 - x0 - gap) / 2
+        bottom = y0
+        for col, (kind, title, colour) in enumerate((("high", "GOT ATTENTION", TEAL),
+                                                     ("low", "LOST ATTENTION", RUST))):
+            x, y = x0 + col * (colw + gap), y0
+            y = c.bbox(c.create_text(x, y, anchor="nw", text=("▲ " if kind == "high" else "▼ ") + title,
+                                     font=font("display", 12, "bold"), fill=colour))[3] + 6
+            rows = [(k, h) for k, h in enumerate(self.hl) if h[0] == kind]
+            if not rows:
+                y = c.bbox(c.create_text(x, y, anchor="nw", text="nothing stood out", font=font("typewriter", 10),
+                                         fill=TEXT2))[3] + 8
+            for m, (k, (_, tv, label, quote)) in enumerate(rows, 1):
+                tag = f"hl{k}"
+                head = c.create_text(x, y, anchor="nw", width=colw, tags=(tag,), fill=INK,
+                                     text=f"{m}  {hms(tv)}  {label or 'no topic'}", font=font("display", 12, "bold"))
+                y = c.bbox(head)[3] + 2
+                if quote:
+                    y = c.bbox(c.create_text(x + 18, y, anchor="nw", width=colw - 18, tags=(tag,), fill=TEXT2,
+                                             text=f"“{shorten(quote)}”", font=font("typewriter", 10)))[3]
+                y += 10
+                if k < len(self.hl_index):
+                    c.tag_bind(tag, "<Button-1>", lambda _e, i=self.hl_index[k]: self.pin(i))
+            bottom = max(bottom, y)
+        return bottom
 
     def pointer(self, mx, my, pin):
         """Mouse at (mx, my): anywhere on the graph's panel (axis labels too), mark the moment nearest in time
@@ -433,9 +513,12 @@ class App:
     """Meter while the feed streams; when it ends (or the meter is closed) finish() runs in a thread, then the
     feedback card replaces the meter. Closing the card quits."""
 
-    def __init__(self, root, feed, finish, sound):
+    QUIET_S = 3.0  # no attention sample for this long while live: "no signal" under the eye
+
+    def __init__(self, root, feed, finish, sound, show_highlights=True):
         import threading
         self.root, self.feed, self.finish, self.sound, self.threading = root, feed, finish, sound, threading
+        self.show_highlights = show_highlights
         self.meter = Meter(root, self.end_now)
         root.attributes("-alpha", 1.0)
         self.idx, self.ema, self.t_ema, self.lo, self.hi = 0, None, None, None, None
@@ -463,8 +546,11 @@ class App:
                 k = 1 - math.exp(-max(t - self.t_ema, 1e-3) / 2.0)
                 self.ema, self.t_ema = self.ema + k * (v - self.ema), t
         if self.state == "live":
+            last = getattr(f, "last_rx", None)  # the network feed says when its last sample came
             if self.ema is None:
                 self.meter.show(None, "waiting for data")
+            elif last is not None and time.monotonic() - last > self.QUIET_S:
+                self.meter.show(None, "no signal")  # keep the last picture, say the stream has stopped
             else:
                 self.meter.show(self.norm(self.ema))
             if f.done:
@@ -480,7 +566,7 @@ class App:
                     return
                 import tkinter as tk
                 self.root.withdraw()
-                Feedback(tk.Toplevel(self.root), self.result, self.root.destroy, self.sound)
+                Feedback(tk.Toplevel(self.root), self.result, self.root.destroy, self.sound, self.show_highlights)
                 return
         self.root.after(40, self.tick)
 
@@ -492,9 +578,10 @@ class App:
             self.result = False
 
 
-def run(feed, finish, sound=True):
-    """Show the meter while `feed` streams; when it ends, call finish() -> result dict for the feedback card."""
+def run(feed, finish, sound=True, highlights=True):
+    """Show the meter while `feed` streams; when it ends, call finish() -> result dict for the feedback card.
+    highlights: list the highest and lowest moments under the card's graph."""
     import tkinter as tk
     root = tk.Tk()
-    App(root, feed, finish, sound)
+    App(root, feed, finish, sound, highlights)
     root.mainloop()
