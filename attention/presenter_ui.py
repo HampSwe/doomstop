@@ -333,7 +333,7 @@ class Feedback:
         win.geometry(f"{cw}x{ch}+{self.start[0]}+{self.start[1]}")
         chime(sound)
         win.focus_force()  # so the arrow keys move the graph's marker
-        self.t0, self.phase = time.monotonic(), "in"
+        self.t0, self.phase, self.painted = time.monotonic(), "in", False
         win.after(16, self.tick)
 
     def graph(self, x0, y0, x1, y1, res, unit):
@@ -488,6 +488,12 @@ class Feedback:
 
     def tick(self):
         e = time.monotonic() - self.t0
+        if not self.painted and self.win.winfo_ismapped():  # Tk 9 on macOS leaves a new borderless window blank
+            self.painted = True                              # until it is resized: 1 px wider and back
+            w, h = self.rw.size
+            self.win.geometry(f"{w + 1}x{h}")
+            self.win.update_idletasks()
+            self.win.geometry(f"{w}x{h}")
         if self.phase == "out":
             alpha = max(0.0, 1 - (time.monotonic() - self.t_out) / 0.22)
             self.win.attributes("-alpha", alpha)
@@ -513,7 +519,9 @@ class App:
     """Meter while the feed streams; when it ends (or the meter is closed) finish() runs in a thread, then the
     feedback card replaces the meter. Closing the card quits."""
 
-    QUIET_S = 3.0  # no attention sample for this long while live: "no signal" under the eye
+    QUIET_S = 3.0   # no attention sample for this long while live: "no signal" under the eye
+    NONE_YET_S = 8.0  # no sample at all for this long: "no scores from PC" instead of "waiting for data"
+    EMPTY_S = 4.0   # the talk ended without scores: say so under the eye for this long, then close
 
     def __init__(self, root, feed, finish, sound, show_highlights=True):
         import threading
@@ -523,6 +531,7 @@ class App:
         root.attributes("-alpha", 1.0)
         self.idx, self.ema, self.t_ema, self.lo, self.hi = 0, None, None, None, None
         self.result, self.state, self.dots = None, "live", 0
+        self.t_start = time.monotonic()
         root.after(50, self.tick)
 
     def end_now(self):
@@ -548,7 +557,8 @@ class App:
         if self.state == "live":
             last = getattr(f, "last_rx", None)  # the network feed says when its last sample came
             if self.ema is None:
-                self.meter.show(None, "waiting for data")
+                waited = time.monotonic() - self.t_start
+                self.meter.show(None, "waiting for data" if waited < self.NONE_YET_S else "no scores from PC")
             elif last is not None and time.monotonic() - last > self.QUIET_S:
                 self.meter.show(None, "no signal")  # keep the last picture, say the stream has stopped
             else:
@@ -561,8 +571,9 @@ class App:
             self.meter.show(None, "analysing" + "." * (self.dots // 6))
             if self.result is not None:
                 self.state = "feedback"
-                if self.result is False:  # not enough data for feedback
-                    self.root.destroy()
+                if self.result is False:  # not enough data for feedback: say so, then close
+                    self.meter.show(None, "no scores: no card")
+                    self.root.after(int(self.EMPTY_S * 1000), self.root.destroy)
                     return
                 import tkinter as tk
                 self.root.withdraw()
