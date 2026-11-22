@@ -1,6 +1,6 @@
 # kgnugen
 
-Doomstop is a productivity tool that helps you stay focused by notifying you when you start doomscrolling. It can also provide virtual presenters with feedback on audience engagement, by displaying an average “attention”-score of the audience at any given moment. After a presentation, Doomstop also provides the presenter with information on how the attention progressed over time. The program transcribes the presentation, and identifies which topics resulted in lower attention scores. Doomstop was created for the Lauzhack hackathon 2027 at EPFL, for Logitech’s challenge.
+Doomstop is a productivity tool that helps you stay focused by notifying you when you start doomscrolling. It can also provide virtual presenters with feedback on audience engagement, by displaying an average “attention”-score of the audience at any given moment. After a presentation, Doomstop also provides the presenter with information on how the attention progressed over time. The program transcribes the presentation, and identifies which topics resulted in lower attention scores. Doomstop was created for the Lauzhack hackathon 2027 at EPFL for Logitech’s challenge.
 
 ## Doomstop detection productivity tool
 
@@ -56,4 +56,4 @@ Fitted on two of the people and tested on the third, for each person in turn, th
 
 **Robustness.** It does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76. Looking down at the keyboard with no phone in view is the model’s weak spot: it scores 0.37 and is still often read as distraction.
 
-Doomstop was created for the Lauzhack hackathon 2027 at EPFL, for Logitech’s challenge.
+Doomstop was created for the Lauzhack hackathon 2027 at EPFL for Logitech’s challenge.
