@@ -26,6 +26,4 @@ When the talk is over, Doomstop shows a feedback card: the attention over the wh
 
 <img src="images/feedback_card.jpg" alt="The feedback card after a talk, titled How the room felt: a graph of the attention over a one-minute talk, with the lowest point at 0:45 marked 11 % attention and labelled with the topic being spoken about" width="550">
 
-**On a Mac?** The LogiInsight colour camera isn't listed by macOS: use [`mac/`](mac/README.md) (Mac only).
-
 This was created for the Lauzhack hackathon 2027 at EPFL, for Logitech’s challenge.
