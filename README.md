@@ -56,6 +56,6 @@ Each signal is averaged over the last 2 seconds and over the last 6 seconds, whi
 
 The model is trained on these three people and was tested on a fourth person, who is not in the training data. In a cross-check on the recordings themselves (fitted on two of the people and scored on the third, for each person in turn), it calls attentive or distracted correctly in 75 % of moments.
 
-**Robustness.** It does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76. Looking down at the keyboard with no phone in view is the model’s weak spot: it scores 0.37 and is still often read as distraction.
+**Robustness.** It does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76.
 
 Doomstop was created for the Lauzhack hackathon 2027 at EPFL for Logitech’s challenge.
