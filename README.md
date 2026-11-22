@@ -81,7 +81,12 @@ A logistic regression turns the ten inputs into the attention score. The last tw
 | `phone_in_hand` | How close a hand is to that phone in the infrared picture, from hand landmarks (MediaPipe), smoothed over time. | +0.48 | +0.13 |
 | `gaze_down_x_phone_in_hand` | `phone_in_hand` while the person is looking down, otherwise 0. | −1.15 | −0.77 |
 
-**Training data.** Three people each followed ten short scripted scenarios in front of the camera: working with the phone away or on the desk, looking down at the keyboard, holding the phone while reading the screen, scrolling in three positions, quick glances at the phone, and working, scrolling, then working again. That is about 10 minutes of recording in total and 9,792 rows, one per camera frame; 9,074 of them were used for fitting. The model is trained on these three people and was tested on a fourth person, who is not in the training data. In a cross-check on the recordings themselves (fitted on two of the people and scored on the third, for each person in turn), it calls attentive or distracted correctly in 75 % of moments.
+**Training data.** Three people each followed ten short scripted scenarios in front of the camera: working with the phone away or on the desk, looking down at the keyboard, holding the phone while reading the screen, scrolling in three positions, quick glances at the phone, and working, scrolling, then working again. That is about 10 minutes of recording in total and 9,792 rows, one per camera frame; 9,074 of them were used for fitting.
+
+**Performance.** The model is trained on these three people and was tested on a fourth person, who is not in the training data. In a cross-check on the recordings themselves (fitted on two of the people and scored on the third, for each person in turn), it calls attentive or distracted correctly in 75 % of moments. In the same cross-check:
+
+- **Detecting doomscrolling.** While a person scrolls on their phone, the model reads 61 % of moments as distracted, and the notification would have appeared in 7 of the 9 scrolling recordings.
+- **Not disturbing work.** While a person works at the screen, with the phone away, on the desk or in the hand, the model reads 94 % of moments as attentive, and the notification would have appeared in 1 of those 9 recordings. Two-second glances at the phone never triggered it.
 
 **Robustness.** It does not yield false positives from simply showing your phone: for a person the model was not trained on, holding the phone while reading the screen scores 0.97 and working with the phone lying on the desk scores 0.82 (1 is fully attentive). Looking down at the keyboard with the phone on the desk scores 0.76.
 
