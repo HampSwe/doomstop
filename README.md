@@ -2,11 +2,15 @@
 
 Doomstop is a productivity tool that helps you stay focused by notifying you when you start doomscrolling. It can also provide virtual presenters with feedback on audience engagement, by displaying an average “attention”-score of the audience at any given moment. After a presentation, Doomstop also provides the presenter with information on how the attention progressed over time. The program transcribes the presentation, and identifies which topics resulted in lower attention scores.
 
-## Doomstop detection technology
+## Doomstop detection productivity tool
 
 Doomstop utilizes Logitech’s LogiInsight camera and software. To classify attention we use information about the user’s gaze, their hand positions, as well as an object detector for detecting a cellphone. We trained a logistic regression model on these features to classify the attention of different users. The model runs locally and all users are anonymous.
 
 ![The Doomstop dashboard: the colour and infrared streams with the detected face, eyes and hands, the attention score, and the signals behind it](images/dashboard.png)
+
+When it detects doomscrolling, this notification appears on the screen and a voice says "doomscroll detected":
+
+<img src="images/popup_card.png" alt="The notification: a card with a green LED eye, the headline DOOMSCROLL DETECTED, the text Get back to work, and an I'M BACK! button" width="470">
 
 ## Doomstop for the online audience
 
