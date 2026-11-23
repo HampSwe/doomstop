@@ -1,10 +1,10 @@
 """Guided data collection for the attention model: one person, ten short scenarios, about five minutes.
 
-    python collect.py --person anna
-    python collect.py --person anna --device 1     # name the colour camera index
-    python collect.py --person anna --only look_down_phone_away
+    python detector/collect.py --person anna
+    python detector/collect.py --person anna --device 1     # name the colour camera index
+    python detector/collect.py --person anna --only look_down_phone_away
                                                    # record just that scenario, to add to earlier recordings
-    python collect.py --list                       # the scenario names
+    python detector/collect.py --list                       # the scenario names
 
 Every run writes its own file, so a later run with --only adds to a person's
 earlier recording instead of replacing it. Use the same --person name as
@@ -46,7 +46,7 @@ real distraction:
 
 Keys: SPACE continue   r redo the scenario just recorded   q or Esc quit (finished scenarios are kept)
 
-Then: python train.py   and   python dashboard.py
+Then: python detector/train.py   and   python detector/dashboard.py
 """
 
 import argparse
@@ -62,7 +62,7 @@ import numpy as np
 
 from engine import RAW
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent      # the repository folder
 DATA_DIR = ROOT / "data"
 WINDOW = "attention data collection"
 WIDTH, HEIGHT = 1280, 720

@@ -54,7 +54,7 @@ from datetime import datetime
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT), str(ROOT / "logiinsight_api")]
+sys.path[:0] = [str(ROOT / "detector"), str(ROOT), str(ROOT / "logiinsight_api")]
 
 PORT = 8767
 REOPEN_S = 3.0
@@ -186,7 +186,8 @@ def main():
         if not ready:
             footer, colour = "measuring your normal pose: look at the screen", dashboard.YELLOW
         elif not go.is_set():
-            footer, colour = "READY: press ENTER in the terminal to start sending", dashboard.YELLOW
+            footer, colour = ("READY: press ENTER in the terminal to start sending" if args.wait
+                              else "ready: starting to send"), dashboard.YELLOW
         else:
             footer, colour = f"sending to {dest[0]}: {sent} scores sent", dashboard.GREEN
         footer += "      c: screen pose   q: quit" + (f"      pop-ups on ({nudger.shown} shown)" if nudger else "")

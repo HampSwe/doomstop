@@ -29,8 +29,9 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-if str(ROOT) not in sys.path:
-    sys.path.insert(0, str(ROOT))
+for _folder in (ROOT, ROOT / "detector"):      # detector/ (engine.py, look_down.py ...) ends up first
+    if str(_folder) not in sys.path:
+        sys.path.insert(0, str(_folder))
 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402

@@ -29,7 +29,7 @@ Both computers: clone the repo, `git switch demo`, make the venv at the repo roo
 - The first time, macOS asks whether Terminal may use the microphone: allow it.
 
 **Camera computer (Windows):** `pip install -r requirements.txt` and the camera login (`LOGIWEBCAM_USER`,
-`LOGIWEBCAM_PASSWORD`), as for `dashboard.py`. Check the camera works: `python dashboard.py`.
+`LOGIWEBCAM_PASSWORD`), as for `dashboard.py`. Check the camera works: `python detector/dashboard.py`.
 
 ## On the day
 

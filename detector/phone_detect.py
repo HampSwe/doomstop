@@ -5,11 +5,11 @@ classes, one of which is "cell phone". It runs on this PC through OpenCV, on
 the plain video frame, so it works with any webcam and needs no camera login.
 The model file (34 MB) is downloaded into models/ on first use.
 
-    python phone_detect.py                 # pick a camera, show PHONE when one is seen
-    python phone_detect.py --device 1      # skip the camera prompt
-    python phone_detect.py --source ir     # the LogiInsight near-infrared stream instead
+    python detector/phone_detect.py                 # pick a camera, show PHONE when one is seen
+    python detector/phone_detect.py --device 1      # skip the camera prompt
+    python detector/phone_detect.py --source ir     # the LogiInsight near-infrared stream instead
 
-    python phone_detect.py --source both   # colour and infrared together, one window each
+    python detector/phone_detect.py --source both   # colour and infrared together, one window each
 
 With both streams the colour one is opened as YUY2, not MJPG: MJPG on the
 colour side slows the infrared stream to about 1 frame per second.
@@ -22,8 +22,8 @@ Scores, all 0..1, shown in the top line of each window:
   phone     the detector's best confidence that a phone is in the picture, over the last second
   in hand   how steadily a hand has been at the phone (infrared stream only)
 
-    python phone_detect.py --all           # also draw every other object it recognises
-    python phone_detect.py --image a.jpg   # run on a picture file instead of a camera
+    python detector/phone_detect.py --all           # also draw every other object it recognises
+    python detector/phone_detect.py --image a.jpg   # run on a picture file instead of a camera
 
 Infrared: the picture is grey and often low in contrast. Grey input by itself
 does not bother the model, but flat contrast does (on grey test photos the
@@ -33,7 +33,7 @@ copes with real infrared pictures has to be measured on recordings:
 
     p / n in the window    save the next frames as "phone" / "no phone" examples
                            (with --source both: the same moments from both streams)
-    python phone_detect.py --eval captures/phone_ir    # score the saved examples
+    python detector/phone_detect.py --eval captures/phone_ir    # score the saved examples
 
 From other code:
 
@@ -58,7 +58,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # hide the per-index camera 
 import cv2  # noqa: E402
 import numpy as np  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent      # the repository folder
 MODEL_PATH = ROOT / "models" / "object_detection_yolox_2022nov.onnx"
 MODEL_URL = ("https://github.com/opencv/opencv_zoo/raw/main/models/"
              "object_detection_yolox/object_detection_yolox_2022nov.onnx")

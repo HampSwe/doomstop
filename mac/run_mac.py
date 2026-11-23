@@ -17,16 +17,17 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "logiinsight_api"))
+sys.path.insert(0, str(ROOT / "detector"))      # dashboard.py, collect.py, engine.py ...
 
 SCRIPTS = {"dashboard": "dashboard.py", "collect": "collect.py"}
 
 
 def main():
     if sys.platform != "darwin":
-        sys.exit("mac/run_mac.py is for macOS only. On Windows/Linux run dashboard.py or collect.py directly.")
+        sys.exit("mac/run_mac.py is for macOS only. On Windows/Linux run detector/dashboard.py or detector/collect.py directly.")
     if len(sys.argv) < 2 or sys.argv[1] not in SCRIPTS:
         sys.exit(__doc__)
-    script = ROOT / SCRIPTS[sys.argv[1]]
+    script = ROOT / "detector" / SCRIPTS[sys.argv[1]]
 
     import engine
     from mac.engine_mac import MacEngine
