@@ -30,7 +30,7 @@ When the talk is over, Doomstop shows a feedback card: the attention over the wh
 
 ## Setup
 
-Doomstop requires the Logitech LogiInsight camera. Connect it by USB to a Windows computer and set up its network link and login as described in [`logiinsight_api/README.md`](logiinsight_api/README.md): the camera’s user name and password go in the environment variables `LOGIWEBCAM_USER` and `LOGIWEBCAM_PASSWORD`. Then install the Python packages:
+Doomstop requires the Logitech LogiInsight camera. Connect it by USB to a Windows computer and set up its network link and login as described in [`logiinsight_api/README.md`](logiinsight_api/README.md): the camera’s username and password go in the environment variables `LOGIWEBCAM_USER` and `LOGIWEBCAM_PASSWORD`. Then install the Python packages:
 
 ```
 pip install -r requirements.txt
