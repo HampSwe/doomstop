@@ -8,7 +8,7 @@ Steps
   2. Smooth + linearly detrend the attention signal, then give each chunk the mean
      attention over [start+lag, end+lag] and a z-score relative to the session.
   3. Pick high / low episodes (|z| above threshold, merged when adjacent, minimum length).
-  4. Label them, and give every chunk a short topic, with a local open-source LLM via
+  4. Label them, and give every chunk a headline (its topic), with a local open-source LLM via
      Ollama (default qwen2.5:3b), else a keyword fallback.
   5. Write report.md + timeline.png (+ insights.json).
 """
@@ -36,7 +36,7 @@ class Chunk:
     text: str
     att: float = float("nan")
     z: float = 0.0
-    topic: str = ""  # short topic label: LLM, else keywords
+    topic: str = ""  # what is said here: an LLM headline, else keywords
 
 
 @dataclass
@@ -158,27 +158,34 @@ Describe correlations ("attention was lower during X"), not proven causes."""
 
 
 def label_chunks_with_llm(chunks: list[Chunk], model: str = MODEL) -> str | None:
-    """Ask for a short topic label per chunk, so any moment of the talk can be named."""
+    """Ask for a headline per chunk (what is said there, not just the subject of the talk), so any moment of
+    the talk can be named. Asked as a "headline" on purpose: asked for a "topic", qwen2.5:3b gives every
+    passage of a short talk the same 2-3 word subject."""
     blocks = "\n".join(f'<passage id="{i}" time="{fmt(c.start)}-{fmt(c.end)}">{c.text}</passage>'
                         for i, c in enumerate(chunks))
-    prompt = f"""Below is a talk, split into numbered passages in the order they were spoken.
+    prompt = f"""Below is a talk, split into numbered passages in the order they were spoken. It is a speech-to-text
+transcript, so a word may be misheard.
 
 {blocks}
 
-Give every passage a short topic label (2-5 words) naming what it is about, e.g. "Why sleep matters".
-Consecutive passages about the same subject get the same label.
-Reply with JSON only, in this shape: {{"topics": [{{"id": 0, "topic": "<label>"}}]}}"""
+Write a headline for every passage: 5-10 words that say what the speaker says or asks in that passage,
+with its concrete details (names, numbers, things), for someone who did not hear it. Every passage gets its own
+headline, also when it carries on the subject of the one before. A headline uses only what is said in its own
+passage; the other passages are there for context. Fix words the transcript clearly misheard.
+For example, not "Marketing strategy" but "First ad campaign flopped: wrong audience".
+Reply with JSON only, in this shape: {{"headlines": [{{"id": 0, "headline": "<headline>"}}]}}"""
     return ask_llm(prompt, model)
 
 
 def apply_chunk_topics(chunks: list[Chunk], raw: str) -> bool:
-    """Merge the LLM's chunk topics in (keyword topics stay where it gave none); False if the reply is unusable."""
+    """Merge the LLM's chunk headlines in as their topics (keyword topics stay where it gave none); False if
+    the reply is unusable."""
     try:
         m = re.search(r"\{.*\}", raw, re.S)
-        for item in json.loads(m.group(0) if m else raw).get("topics", []):
+        for item in json.loads(m.group(0) if m else raw).get("headlines", []):
             i = int(item["id"])
-            if 0 <= i < len(chunks) and str(item.get("topic", "")).strip():
-                chunks[i].topic = str(item["topic"]).strip()
+            if 0 <= i < len(chunks) and str(item.get("headline", "")).strip():
+                chunks[i].topic = str(item["headline"]).strip()
         return True
     except (ValueError, TypeError, KeyError, AttributeError) as e:
         print(f"Could not parse LLM chunk topics ({e}) - keeping keyword topics.")
@@ -205,6 +212,18 @@ def ask_llm(prompt: str, model: str = MODEL) -> str | None:
     return None
 
 
+def load_llm(model: str = MODEL) -> None:
+    """Load the model into Ollama's memory now (a chat with no messages) and keep it there for an hour, so the
+    first real call doesn't wait ~10 s for it. Quiet if Ollama isn't there: ask_llm says so when it matters."""
+    body = json.dumps({"model": model, "messages": [], "keep_alive": "1h"}).encode()
+    req = urllib.request.Request(OLLAMA_URL, data=body, headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=120):
+            pass
+    except OSError:  # not running, model not pulled, timeout
+        pass
+
+
 def apply_llm(episodes: list[Episode], raw: str) -> list[str] | None:
     """Merge the LLM's labels into the episodes; None if the reply is unusable."""
     try:
@@ -222,14 +241,15 @@ def apply_llm(episodes: list[Episode], raw: str) -> list[str] | None:
         return None
 
 
-def fallback_insights(episodes: list[Episode]) -> list[str]:
+def fallback_insights(episodes: list[Episode], hint=True) -> list[str]:
     out = []
     for kind, word in (("high", "highest"), ("low", "lowest")):
         es = [e for e in episodes if e.kind == kind]
         if es:
             labs = "; ".join(f"{e.label} ({fmt(e.start)})" for e in es)
             out.append(f"Attention was {word} during: {labs}.")
-    out.append("Run `ollama serve` (with the model pulled) to get LLM-written topic labels and explanations.")
+    if hint:
+        out.append("Run `ollama serve` (with the model pulled) to get LLM-written topic labels and explanations.")
     return out
 
 
@@ -311,22 +331,24 @@ def analyse(words: list[dict], t: np.ndarray, s: np.ndarray, lag=2.0, z_thr=0.6,
 
 
 def write_report(out_dir: Path, words: list[dict], t: np.ndarray, s: np.ndarray, lag=2.0, z_thr=0.6, k=3,
-                 model: str | None = MODEL) -> list[str]:
+                 model: str | None = MODEL, explain=True) -> list[str]:
     """Steps 1-5: analyse, label (LLM via Ollama when model is given and reachable, else keywords) and
-    write report.md, timeline.png and insights.json into out_dir. Returns the report's lines."""
+    write report.md, timeline.png and insights.json into out_dir. Returns the report's lines.
+    explain=False: ask the LLM only for the chunk topics (a short call), not for the episode labels,
+    explanations and tips (a long one); the episodes keep their keyword labels."""
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
     chunks, s_detr, episodes = analyse(words, t, s, lag, z_thr, k)
     full_text = " ".join(w["word"] for w in words)
-    raw = summarize_with_llm(episodes, full_text, model) if model else None
+    raw = summarize_with_llm(episodes, full_text, model) if model and explain else None
     insights = apply_llm(episodes, raw) if raw else None
     source = f"{model} via Ollama" if insights is not None else "keyword fallback"
-    if insights is None:
-        insights = fallback_insights(episodes)
-    elif chunks:  # the LLM is reachable: name every chunk too
+    if chunks and model and (insights is not None or not explain):  # the LLM answered, or wasn't asked yet
         raw = label_chunks_with_llm(chunks, model)
         if raw:
             apply_chunk_topics(chunks, raw)
+    if insights is None:  # explain=False: the explanations weren't asked for, so no hint about getting them
+        insights = fallback_insights(episodes, hint=explain)
 
     plot(out_dir / "timeline.png", t, s, s_detr, chunks, episodes, lag)
 

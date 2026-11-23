@@ -129,10 +129,16 @@ class Talk:
         self.blocks, self.frames, self.peak = queue.Queue(), 0, 0.0
         self.audio, self.audio_lock = [], threading.Lock()   # every block so far, for the live transcription
         self.segments, self.done_upto = [], 0                # transcribed segments; samples transcribed so far
-        self.stopping = threading.Event()
+        self.stopping, self.stopped = threading.Event(), threading.Event()  # the talk is over; the mic has stopped
         self.file = sf.SoundFile(self.wav, mode="w", samplerate=RATE, channels=1, subtype="PCM_16")
-        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32",
-                                     callback=lambda data, n, t, status: self.blocks.put(data[:, 0].copy()))
+
+        def record(data, frames, t, status):
+            if self.stopping.is_set():  # the stream stops itself: stream.stop() (and abort() / close()) from
+                raise sd.CallbackStop   # another thread hang on macOS while Tk 9 runs on the main thread
+            self.blocks.put(data[:, 0].copy())
+
+        self.stream = sd.InputStream(samplerate=RATE, channels=1, dtype="float32", callback=record,
+                                     finished_callback=self.stopped.set)
         self.writer = threading.Thread(target=self._write, daemon=True)
         self.writer.start()
         self.live = threading.Thread(target=self._transcribe_live, daemon=True)
@@ -193,7 +199,13 @@ class Talk:
         self.done_upto += int(kept_end * RATE)
 
     def _transcribe_live(self):
+        warned = False
         while not self.stopping.is_set():
+            if not warned and self.frames >= 3 * RATE and self.peak == 0.0:  # exact zeros: macOS blocks the mic
+                print("WARNING: the microphone records exact silence - macOS is blocking it, so this talk will "
+                      "have no topics. System Settings > Privacy & Security > Microphone: allow the terminal app, "
+                      "quit it (Cmd+Q) and start again.", file=sys.stderr, flush=True)
+                warned = True
             if self.model is not None and self.frames - self.done_upto >= LIVE_STEP_S * RATE:
                 try:
                     self._pass(final=False)
@@ -205,12 +217,11 @@ class Talk:
     def words(self, out_dir):
         """Stop recording; return the transcript words [{start, end, word}] in seconds from the start, and
         save them as out_dir/words.json (the format of attention_insights/transcribe.py)."""
-        self.stream.stop()
-        self.stream.close()
+        self.stopping.set()      # the audio callback stops the stream, and the live transcription stops
+        self.stopped.wait(1.0)
         self.blocks.put(None)
         self.writer.join()
         self.file.close()
-        self.stopping.set()
         print(f"recorded {self.frames / RATE:.0f} s of talk", file=sys.stderr)
         if self.peak < 1e-3:
             print("WARNING: the microphone recorded only silence. On a Mac: System Settings > Privacy & "
@@ -287,9 +298,30 @@ def analyse(prof, words, lag):
     return res, (grid[ok], y[ok])
 
 
-def finish(feed, lag, out_dir, model, talk=None):
+def save_scores(prof, path, ended):
+    """The attention that arrived, on the recording's clock (seconds from its start), so --redo can make the
+    feedback again from the run's folder: scores.csv next to words.json."""
+    with open(path, "w") as f:
+        f.write("time,attention\n")
+        f.writelines(f"{t:.3f},{v:.4f}\n" for t, v in zip(prof.t, prof.s) if t <= ended)
+
+
+def load_run(feed, run_dir):
+    """--redo: a run folder's transcript and attention (words.json, scores.csv) into the feed."""
+    run_dir = Path(run_dir)
+    data = json.loads((run_dir / "words.json").read_text())
+    feed.words = [dict(w) for s in data["segments"] for w in s["words"]]
+    for line in (run_dir / "scores.csv").read_text().splitlines()[1:]:
+        t, v = line.split(",")
+        feed.prof.add(float(t), float(v), None)
+    feed.done = True
+
+
+def finish(feed, lag, out_dir, model, talk=None, explain=True, redo=False):
     """End of the talk: print the ▲ / ▼ moments, let attention_insights write its report, and return what the
-    feedback card shows (None if there is too little attention data). With --record, transcribe first."""
+    feedback card shows (None if there is too little attention data). With --record, transcribe first.
+    explain=False: the LLM only names the topics (~2 s), it doesn't label and explain the high / low moments
+    (~20 s more), which only the card's list of moments shows. redo: the feed is a saved run (--redo)."""
     ended = time.time() - talk.started if talk is not None else None
     if talk is not None:
         words = talk.words(out_dir)
@@ -297,10 +329,14 @@ def finish(feed, lag, out_dir, model, talk=None):
             feed.words.extend(words)
     prof, words = snapshot(feed)
     if len(prof) < 5:
-        print("not enough attention data for feedback", file=sys.stderr)
+        print(f"not enough attention data for feedback: {len(prof)} scores arrived from the camera computer. "
+              "On the PC: is call/score_sender.py running, with --to this Mac's address, and was Enter pressed "
+              "after DONE. PRESS ENTER TO START?", file=sys.stderr)
         return None
-    if talk is not None:  # the talk is from the first score to closing the eye: drop the setup before it
-        talk_on_clock(prof, words, ended, lag)
+    if talk is not None:
+        save_scores(prof, Path(out_dir) / "scores.csv", ended)
+    if talk is not None or redo:  # the talk is from the first score to closing the eye: drop the setup before it
+        talk_on_clock(prof, words, ended if talk is not None else float("inf"), lag)
     res, (t, y) = analyse(prof, words, lag)
     print(f"\n=== Live insights ({hms(t[-1] - t[0])} of attention, {len(words)} words) ===")
     for key, title in (("peaks", "Highest attention"), ("dips", "Lowest attention")):
@@ -319,7 +355,7 @@ def finish(feed, lag, out_dir, model, talk=None):
         print("(attention rescaled to 0..1 for the insights report)")
     print()
     out_dir = Path(out_dir)
-    lines = insights.write_report(out_dir, words, t, y, lag, model=model)
+    lines = insights.write_report(out_dir, words, t, y, lag, model=model, explain=explain)
     print("\n".join(lines[:lines.index("## All chunks")]))
     print(f"\nWrote {out_dir / 'report.md'}, {out_dir / 'timeline.png'}, {out_dir / 'insights.json'}")
     data = json.loads((out_dir / "insights.json").read_text())
@@ -371,10 +407,20 @@ def main(argv=None):
     p.add_argument("--no-llm", action="store_true", help="keyword labels only, don't ask a local LLM")
     p.add_argument("--no-window", action="store_true", help="terminal only: print moments as they are found")
     p.add_argument("--no-sound", action="store_true", help="no chime when the feedback card appears")
+    p.add_argument("--redo", metavar="RUN_DIR",
+                   help="the feedback again for a saved talk: a folder with words.json and scores.csv "
+                        "(e.g. attention_insights/data/runs/<time>); the report is written there again")
     a = p.parse_args(argv)
+    if a.redo:
+        a.out_dir, a.udp, a.record, a.words = a.redo, None, False, None
     model = None if a.no_llm else a.model
+    if model:  # load the LLM now, like the speech model, so the topics take seconds when the talk ends
+        threading.Thread(target=insights.load_llm, args=(model,), daemon=True).start()
+    explain = not a.no_highlights  # the LLM's labels of the high / low moments only show in their list
 
     feed = Feed()
+    if a.redo:
+        load_run(feed, a.redo)
     if a.words:
         data = json.loads(Path(a.words).read_text())
         feed.words = [dict(w) for s in data["segments"] for w in s["words"]]
@@ -385,7 +431,9 @@ def main(argv=None):
             feed.arrival_start = talk.started
         except Exception as e:  # noqa: BLE001 - no microphone: the eye still works, the card has no topics
             print(f"WARNING: cannot record the microphone ({e}); no transcript, so no topics", file=sys.stderr)
-    if a.udp:
+    if a.redo:
+        source = f"the saved talk in {a.redo}"
+    elif a.udp:
         threading.Thread(target=read_udp, args=(feed, a.udp, a.bind), daemon=True).start()
         source = f"udp://{a.bind}:{a.udp}"
         if a.bind == "0.0.0.0":
@@ -402,11 +450,11 @@ def main(argv=None):
             run_terminal(feed, a.lag)
         except KeyboardInterrupt:  # UDP never ends by itself: Ctrl+C ends the talk
             pass
-        finish(feed, a.lag, a.out_dir, model, talk)
+        finish(feed, a.lag, a.out_dir, model, talk, explain, bool(a.redo))
     else:
         import presenter_ui
-        presenter_ui.run(feed, lambda: finish(feed, a.lag, a.out_dir, model, talk), sound=not a.no_sound,
-                         highlights=not a.no_highlights)
+        presenter_ui.run(feed, lambda: finish(feed, a.lag, a.out_dir, model, talk, explain, bool(a.redo)),
+                         sound=not a.no_sound, highlights=not a.no_highlights)
 
 
 def own_address():

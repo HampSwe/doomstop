@@ -11,13 +11,14 @@ Presenter Mac (start it whenever, before or after the sender; see DEMO.md):
     .venv/bin/python attention/live_insights.py --udp 8767 --bind 0.0.0.0 --record   # the LED eye + feedback
     .venv/bin/python attention/live_view.py --udp 8767 --bind 0.0.0.0 --short       # or: a plain live graph
 
-When the camera is open and the normal pose is measured it prints
+Sending starts by itself as soon as the camera is open and the normal pose is
+measured. With --wait it prints
 
     DONE. PRESS ENTER TO START
 
-and waits: nothing is sent or logged until Enter is pressed (--no-wait starts at
-once). The presenter's feedback counts the talk from the first score that
-arrives, so Enter is the start of the talk.
+instead, and nothing is sent or logged until Enter is pressed. The presenter's
+feedback counts the talk from the first score that arrives, so with --wait,
+Enter is the start of the talk.
 
 The score is computed exactly as dashboard.py computes it: the engine's
 signals go into attention.History, and the model (models/attention_model.json,
@@ -154,7 +155,9 @@ def main():
     p.add_argument("--ir-device", type=int, help="infrared camera index (default: auto-detect)")
     p.add_argument("--phone-score", type=float, default=0.35, help="phone confidence threshold (default 0.35)")
     p.add_argument("--preview", action="store_true", help="show a small window with the score being sent")
-    p.add_argument("--no-wait", action="store_true", help="start sending at once, without waiting for Enter")
+    p.add_argument("--wait", action="store_true",
+                   help="when everything is ready, wait for Enter before sending (default: start at once)")
+    p.add_argument("--no-wait", action="store_true", help=argparse.SUPPRESS)   # the default now; still accepted
     p.add_argument("--dashboard", action="store_true",
                    help="show dashboard.py's window here too: both streams, the attention score, the signals")
     p.add_argument("--popup", action="store_true",
@@ -205,7 +208,7 @@ def main():
           flush=True)
 
     interval, last_sent, last_status, sent, failing, score = 1 / args.rate, 0.0, time.time(), 0, False, None
-    go, asked = threading.Event(), False       # nothing is sent until Enter is pressed (or --no-wait)
+    go, asked = threading.Event(), False       # with --wait, nothing is sent until Enter is pressed
 
     def wait_for_enter():
         sys.stdin.readline()                   # returns on Enter, and at once when there is no keyboard
@@ -218,11 +221,12 @@ def main():
             for item in source:
                 if item is not None and not asked:            # the first score: everything is initialised
                     asked = True
-                    if args.no_wait:
-                        go.set()
-                    else:
+                    if args.wait:
                         print("\nDONE. PRESS ENTER TO START", flush=True)
                         threading.Thread(target=wait_for_enter, daemon=True).start()
+                    else:
+                        print("ready: sending", flush=True)
+                        go.set()
                 if item is not None:
                     now, score, frame = item
                     if nudger and nudger.update(now, score):
