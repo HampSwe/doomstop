@@ -1,7 +1,7 @@
 """The productivity tool: the dashboard, plus a friendly pop-up card when you doomscroll.
 
-    python focus.py                 # finds the LogiInsight colour and infrared cameras
-    python focus.py --device 1      # or name the colour camera index
+    python detector/focus.py                 # finds the LogiInsight colour and infrared cameras
+    python detector/focus.py --device 1      # or name the colour camera index
 
 This is dashboard.py with --popup switched on, so everything dashboard.py
 shows stays on screen: both streams, the attention score and the signals. When

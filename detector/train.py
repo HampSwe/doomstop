@@ -1,11 +1,11 @@
 """Fit the attention model on the sessions recorded with collect.py.
 
-    python train.py                       # every data/attention_*.csv -> models/attention_model.json
-    python train.py --windows 1,4,10      # other averaging windows (seconds) than the default 2,6
-    python train.py --add face_down_score --out models/attention_model_face_down.json
+    python detector/train.py                       # every data/attention_*.csv -> models/attention_model.json
+    python detector/train.py --windows 1,4,10      # other averaging windows (seconds) than the default 2,6
+    python detector/train.py --add face_down_score --out models/attention_model_face_down.json
                                           # a second model that also uses the head tilt
-    python train.py --decay 6 --recover 2 # another ground-truth rule
-    python train.py --no-save ...         # just show the scores, to compare settings
+    python detector/train.py --decay 6 --recover 2 # another ground-truth rule
+    python detector/train.py --no-save ...         # just show the scores, to compare settings
 
 The recordings hold only the plain values of every moment, so everything
 below is decided here and can be changed without recording again:
@@ -37,7 +37,7 @@ import numpy as np
 
 from attention import DECAY_S, MODEL_PATH, RECOVER_S, SIGNALS, WINDOWS_S, History, feature_names, fit, next_target
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent      # the repository folder
 SETTLE_S = 1.0
 SCRIPT_COLUMNS = ("person", "scenario", "t", "phase", "action", "distracted", "file")   # not measurements
 

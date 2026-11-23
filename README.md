@@ -39,12 +39,12 @@ pip install -r requirements.txt
 ### Productivity tool
 
 ```
-python focus.py
+python detector/focus.py
 ```
 
 This opens the dashboard, with both camera pictures, the attention score and the signals, and shows the DOOMSCROLL DETECTED notification when you start scrolling. Look at the screen for the first second, while your normal pose is measured. Press `q` in the dashboard to quit.
 
-`python dashboard.py` shows the same dashboard without the notification.
+`python detector/dashboard.py` shows the same dashboard without the notification.
 
 ### Audience engagement
 

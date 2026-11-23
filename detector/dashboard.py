@@ -5,12 +5,12 @@ train.py on data recorded with collect.py. It uses the signals averaged over
 the last few seconds, so it follows what you do with a short delay. Until a
 model has been fitted the row says so.
 
-    python dashboard.py               # finds the LogiInsight colour and infrared cameras
-    python dashboard.py --device 1    # or name the colour camera index
-    python dashboard.py --face        # also show face_down and face_down_score
-    python dashboard.py --binary-gaze # also show gaze_down (0 or 1)
-    python dashboard.py --model models/attention_model_face_down.json   # another fitted model
-    python dashboard.py --popup       # also pop up a friendly card when you doomscroll (this is focus.py)
+    python detector/dashboard.py               # finds the LogiInsight colour and infrared cameras
+    python detector/dashboard.py --device 1    # or name the colour camera index
+    python detector/dashboard.py --face        # also show face_down and face_down_score
+    python detector/dashboard.py --binary-gaze # also show gaze_down (0 or 1)
+    python detector/dashboard.py --model models/attention_model_face_down.json   # another fitted model
+    python detector/dashboard.py --popup       # also pop up a friendly card when you doomscroll (this is focus.py)
 
 Signals (scores are 0..1; the white tick on a bar is where it counts as "on"):
 

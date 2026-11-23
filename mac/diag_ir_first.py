@@ -13,7 +13,7 @@ from pathlib import Path
 
 os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")
 ROOT = Path(__file__).resolve().parents[1]
-sys.path[:0] = [str(ROOT), str(ROOT / "logiinsight_api")]
+sys.path[:0] = [str(ROOT / "detector"), str(ROOT), str(ROOT / "logiinsight_api")]
 
 from camera_utils import list_cameras, open_camera  # noqa: E402
 from mac.engine_mac import ColourUSB, looks_like_ir  # noqa: E402

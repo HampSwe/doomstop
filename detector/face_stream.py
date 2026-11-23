@@ -10,10 +10,10 @@ Face boxes come from one of two sources:
 The default (--source auto) uses the camera's AI when it is reachable and
 falls back to the local detector otherwise.
 
-    python face_stream.py                 # pick a camera, auto source
-    python face_stream.py --device 1      # skip the camera prompt
-    python face_stream.py --mesh          # + 478-point face mesh (device AI only)
-    python face_stream.py --source local  # never touch the network link
+    python detector/face_stream.py                 # pick a camera, auto source
+    python detector/face_stream.py --device 1      # skip the camera prompt
+    python detector/face_stream.py --mesh          # + 478-point face mesh (device AI only)
+    python detector/face_stream.py --source local  # never touch the network link
 
 Press q or Esc in the window to quit.
 """
@@ -29,7 +29,7 @@ os.environ.setdefault("OPENCV_LOG_LEVEL", "ERROR")  # hide the per-index probe w
 
 import cv2  # noqa: E402
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent      # the repository folder
 sys.path.insert(0, str(ROOT / "logiinsight_api"))
 
 from camera_utils import CameraNotFoundError, describe, list_cameras, open_camera  # noqa: E402

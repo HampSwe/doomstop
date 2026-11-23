@@ -33,10 +33,10 @@ The design comes from recordings of one person in four poses (captures/, keys
     measure and dropped: lowered eyelids disturb it, and its noise follows the
     pitch's.
 
-    python look_down.py               # finds the LogiInsight colour camera
-    python look_down.py --device 1    # or name the camera index
-    python look_down.py --no-phone    # FACE and GAZE only
-    python look_down.py --ir          # plus a second window: the infrared stream with its own phone
+    python detector/look_down.py               # finds the LogiInsight colour camera
+    python detector/look_down.py --device 1    # or name the camera index
+    python detector/look_down.py --no-phone    # FACE and GAZE only
+    python detector/look_down.py --ir          # plus a second window: the infrared stream with its own phone
                                       # detection and hands (PHONE OUT / PHONE IN HAND)
 
 With --ir the colour stream is opened as YUY2 instead of MJPG (MJPG would slow
@@ -99,7 +99,7 @@ RECORD_POSES = {ord("1"): ("screen", "LOOK AT THE SCREEN"),
                 ord("2"): ("eyes_down", "EYES DOWN, HEAD STILL"),
                 ord("3"): ("head_and_eyes_down", "LOOK DOWN AT YOUR PHONE"),
                 ord("4"): ("head_down_eyes_up", "HEAD DOWN, EYES ON THE SCREEN")}
-CAPTURE_DIR = Path(__file__).resolve().parent / "captures"
+CAPTURE_DIR = Path(__file__).resolve().parent.parent / "captures"
 
 WINDOW = "look_down (c / d: calibrate, q: quit)"
 IR_WINDOW = "look_down: infrared"

@@ -1,14 +1,14 @@
 # macOS only: LogiInsight colour camera on a Mac
 
 > **Use this folder only on a Mac.** On Windows and Linux the colour camera is
-> listed normally: run `dashboard.py` / `collect.py` directly and ignore `mac/`.
+> listed normally: run `detector/dashboard.py` / `detector/collect.py` directly and ignore `mac/`.
 
 ## The problem
 
 macOS only lists the LogiInsight's **infrared** stream (`LVNext CPD Camera`).
 The colour stream (`LVNext Camera`) reaches the Mac over USB, and macOS even
 loads its driver, but it never appears in the camera list. So
-`cv2.VideoCapture` can't open it. `dashboard.py` and `collect.py` then pick
+`cv2.VideoCapture` can't open it. `detector/dashboard.py` and `detector/collect.py` then pick
 the MacBook's own webcam, and the camera's face AI never starts.
 
 Check whether your Mac has this problem:
@@ -27,7 +27,7 @@ Mac** with MediaPipe's FaceLandmarker instead. It uses the same landmark layout,
 and is fed to `look_down.LookDownDetector` exactly as the camera's mesh is.
 
 `mac/engine_mac.py` is a drop-in `engine.Engine` that does this, and
-`mac/run_mac.py` swaps it in, so `dashboard.py` and `collect.py` run unchanged.
+`mac/run_mac.py` swaps it in, so `detector/dashboard.py` and `detector/collect.py` run unchanged.
 
 ## Setup (once)
 
@@ -48,7 +48,7 @@ sudo .venv/bin/python mac/run_mac.py dashboard
 sudo .venv/bin/python mac/run_mac.py collect --person NAME
 ```
 
-Any other options are passed straight to `dashboard.py` / `collect.py`.
+Any other options are passed straight to `detector/dashboard.py` / `detector/collect.py`.
 `--device` is ignored on the Mac, because the colour stream is found on USB.
 
 **First check** that the colour stream works at all. This saves one frame to
@@ -80,11 +80,11 @@ Getting both on a Mac would mean writing our own USB video driver for the
 camera's two isochronous streams, which isn't worth it for a demo. So:
 
 - **Both streams together:** use a Windows or Linux laptop
-  (`dashboard.py` / `collect.py` directly, no `mac/`).
+  (`detector/dashboard.py` / `detector/collect.py` directly, no `mac/`).
 - **Mac, colour:** `sudo .venv/bin/python mac/run_mac.py dashboard`, for
   look-down (FACE/GAZE) and colour phone detection.
 - **Mac, infrared only:** the normal scripts without sudo, e.g.
-  `.venv/bin/python phone_detect.py --source ir`.
+  `.venv/bin/python detector/phone_detect.py --source ir`.
 
 **Known caveats:**
 - **Untested thresholds.** The look-down thresholds were tuned on the

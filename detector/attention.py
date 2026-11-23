@@ -30,7 +30,7 @@ from pathlib import Path
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent      # the repository folder
 MODEL_PATH = ROOT / "models" / "attention_model.json"
 
 SIGNALS = ("gaze_down_score", "color_phone", "phone", "phone_in_hand", "gaze_down_x_phone_in_hand")

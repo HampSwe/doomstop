@@ -19,7 +19,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent
+ROOT = Path(__file__).resolve().parent.parent      # the repository folder
 MESSAGE_DIR = ROOT / "message"
 VOICE = ROOT / "sound" / "doomscroll_detected.mp3"     # the card's only sound
 
