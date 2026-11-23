@@ -1,4 +1,4 @@
-# kgnugen
+# Doomstop
 
 Doomstop is a productivity tool that helps you stay focused by notifying you when you start doomscrolling. It can also provide virtual presenters with feedback on audience engagement, by displaying an average “attention”-score of the audience at any given moment. After a presentation, Doomstop also provides the presenter with information on how the attention progressed over time. The program transcribes the presentation, and identifies which topics resulted in lower attention scores. Doomstop was created for the Lauzhack hackathon 2027 at EPFL for Logitech’s challenge.
 
